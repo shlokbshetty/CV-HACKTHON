@@ -23,6 +23,7 @@ import torch
 import torch.nn.functional as F
 
 from depth_refine.classical.filters import (
+    bilateral_mode_snap_and_denoise,
     detect_edges_and_discontinuities,
     guided_filter,
     joint_bilateral_filter,
@@ -197,21 +198,25 @@ class HybridReconstructor:
         interior_valid_lr = mask_clean_lr * (1.0 - disc_lr.coherence_gate)
         residual_lr = (depth_filled_lr - pred_lr) * interior_valid_lr
         residual_hr = F.interpolate(residual_lr, size=(H, W), mode="bilinear", align_corners=False)
-        conf_weight = torch.clamp(1.0 / (1.0 + uncertainty * 2.0), min=0.15, max=0.65)
-        d_anchored = d_deep + 0.35 * conf_weight * (1.0 - edge_gate) * residual_hr
+        conf_weight = torch.clamp(1.0 / (1.0 + uncertainty * 2.0), min=0.10, max=0.45)
+        bp_gain = 0.12 if scale <= 2 else 0.25
+        d_anchored = d_deep + bp_gain * conf_weight * (1.0 - edge_gate) * residual_hr
 
-        # Fine sub-pixel trilateral boundary polish
+        # 3b. Sub-pixel Trilateral Boundary Polish
+        polish_k = 3 if scale <= 2 else 5
         d_polished = joint_bilateral_filter(
             d_anchored,
             rgb_hr,
-            kernel_size=5,
-            sigma_spatial=1.6,
-            sigma_color=0.028,
-            sigma_depth=0.15,
+            kernel_size=polish_k,
+            sigma_spatial=1.0 if scale <= 2 else 1.6,
+            sigma_color=0.030,
+            sigma_depth=0.16,
             iterations=1,
+            texture_suppression=True,
         )
-
-        d_hybrid = torch.clamp(d_polished, min=0.05)
+        polish_w = 0.35 if scale <= 2 else 0.65
+        d_hybrid = polish_w * d_polished + (1.0 - polish_w) * d_anchored
+        d_hybrid = torch.clamp(d_hybrid, min=0.05)
 
         if squeeze:
             return HybridReconstructionResult(

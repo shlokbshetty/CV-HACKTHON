@@ -1,9 +1,10 @@
 """
-Edge-Aware Classical Filtering & Discontinuity Detection:
-1. Joint Bilateral Filter & Upsampler (JBF / JBU, Kopf et al.) with Trilateral Depth-Coherence Guard
-2. Fast Guided Filter (He et al., O(N) exact solver with Edge-Aware Regularization)
+Edge-Aware Classical Filtering, Discontinuity Detection & Bilateral Mode Snapping:
+1. Joint Bilateral Filter (JBF, Kopf et al.)
+2. Fast Guided Filter (He et al., TPAMI 2013)
 3. Edge Detection & Depth Discontinuity Classifier (`detect_edges_and_discontinuities`)
-4. Unified Classical Reconstruction Seam (`reconstruct_classical`)
+4. Foreground/Background Bilateral Mode Snapping & Planar Denoiser (`bilateral_mode_snap_and_denoise`)
+5. Unified Classical Reconstruction Seam (`reconstruct_classical`)
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from typing import Literal, Optional, Tuple
 import torch
 import torch.nn.functional as F
 
-from depth_refine.classical.hole_filling import fill_depth_holes
+from depth_refine.classical.hole_filling import fill_depth_holes, remove_depth_outliers
 from depth_refine.classical.interpolation import interpolate_depth
 
 
@@ -76,13 +77,10 @@ def detect_edges_and_discontinuities(
 
     if rgb is not None:
         _, _, rgb_mag = compute_spatial_gradients(rgb)
-        # Local depth range in a 9x9 neighborhood tells us if we are near a true 3D boundary
         d_max = F.max_pool2d(depth, kernel_size=9, stride=1, padding=4)
         d_min = -F.max_pool2d(-depth, kernel_size=9, stride=1, padding=4)
         local_span = (d_max - d_min) / torch.clamp(depth, min=0.25)
-
-        # Coherence gate is near 1.0 when local depth span indicates a 3D jump, and near 0.0 on flat textured walls
-        coherence = torch.sigmoid((local_span - 0.03) * 60.0)
+        coherence = torch.sigmoid((local_span - 0.032) * 65.0)
     else:
         rgb_mag = torch.zeros_like(d_mag)
         coherence = torch.ones_like(d_mag)
@@ -105,21 +103,16 @@ def detect_edges_and_discontinuities(
 def joint_bilateral_filter(
     depth: torch.Tensor,
     rgb: torch.Tensor,
-    kernel_size: int = 9,
-    sigma_spatial: float = 3.5,
-    sigma_color: float = 0.04,
-    sigma_depth: float = 0.25,
-    iterations: int = 2,
+    kernel_size: int = 7,
+    sigma_spatial: float = 2.5,
+    sigma_color: float = 0.06,
+    sigma_depth: float = 0.35,
+    iterations: int = 1,
+    texture_suppression: bool = False,
 ) -> torch.Tensor:
     """
-    Edge-Preserving Joint Bilateral Filter / Upsampler (JBF / JBU) with Depth-Coherence Guard.
-
-    At true 3D depth discontinuities (where `coherence_gate` is high), uses purely RGB photometric
-    affinity + spatial Gaussian weights (classic Joint Bilateral Upsampling, Kopf et al.) so blurry
-    bicubic ramp pixels across an edge are replaced by the crisp foreground or background depth whose
-    RGB color matches the target pixel!
-    On flat surfaces (where `coherence_gate` is low), widens sigma_color and uses depth-range weighting
-    so RGB wallpaper textures never bleed into flat walls.
+    Joint Bilateral Filter (JBF, Kopf et al.).
+    When `texture_suppression=True`, modulates color bandwidth by the 3D discontinuity coherence gate.
     """
     squeeze = False
     if depth.ndim == 3:
@@ -132,24 +125,23 @@ def joint_bilateral_filter(
     dtype = depth.dtype
     radius = kernel_size // 2
 
-    # Precompute spatial Gaussian weights (1, K*K, 1, 1)
     coords = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
     yy, xx = torch.meshgrid(coords, coords, indexing="ij")
     spatial_dist2 = (xx * xx + yy * yy).reshape(1, -1, 1, 1)
     w_spatial = torch.exp(-spatial_dist2 / (2.0 * sigma_spatial * sigma_spatial))
 
-    # Precompute RGB patches and color weights
     pad_rgb = F.pad(rgb, (radius, radius, radius, radius), mode="replicate")
     patches_rgb = F.unfold(pad_rgb, kernel_size=kernel_size).view(B, 3, kernel_size * kernel_size, H, W)
-    color_dist2 = ((patches_rgb - rgb.unsqueeze(2)) ** 2).mean(dim=1)  # (B, K*K, H, W)
+    color_dist2 = ((patches_rgb - rgb.unsqueeze(2)) ** 2).mean(dim=1)
 
-    # Detect where true 3D depth jumps exist vs flat textured surfaces
-    disc_info = detect_edges_and_discontinuities(depth, rgb)
-    gate_2d = disc_info.coherence_gate  # (B, 1, H, W)
+    if texture_suppression:
+        disc_info = detect_edges_and_discontinuities(depth, rgb)
+        gate_2d = disc_info.coherence_gate
+        eff_sigma_c = sigma_color * gate_2d + 0.45 * (1.0 - gate_2d)
+    else:
+        gate_2d = torch.ones_like(depth)
+        eff_sigma_c = torch.full_like(depth, sigma_color)
 
-    # Tight sigma_color at true 3D boundaries to snap edges sharply to RGB;
-    # Wide sigma_color on flat surfaces so RGB textures do not create false depth ripples
-    eff_sigma_c = sigma_color * gate_2d + 0.45 * (1.0 - gate_2d)
     w_color = torch.exp(-color_dist2 / (2.0 * (eff_sigma_c * eff_sigma_c) + 1e-8))
 
     d_cur = depth.clone()
@@ -157,12 +149,9 @@ def joint_bilateral_filter(
         pad_d = F.pad(d_cur, (radius, radius, radius, radius), mode="replicate")
         patches_d = F.unfold(pad_d, kernel_size=kernel_size).view(B, kernel_size * kernel_size, H, W)
 
-        # Notice: at blurred bicubic ramp pixels (where gate_2d is near 1), `d_cur` itself is an invalid
-        # mid-air average ("flying pixel"), so we must NOT lock to `d_cur` via w_depth at boundaries!
-        # Instead, w_depth is only enforced on flat interior surfaces (1 - gate_2d).
         depth_dist2 = (patches_d - d_cur) ** 2
         w_depth_planar = torch.exp(-depth_dist2 / (2.0 * sigma_depth * sigma_depth))
-        w_depth = gate_2d + (1.0 - gate_2d) * w_depth_planar
+        w_depth = gate_2d + (1.0 - gate_2d) * w_depth_planar if texture_suppression else w_depth_planar
 
         weights = w_spatial * w_color * w_depth
         d_cur = (patches_d * weights).sum(dim=1, keepdim=True) / torch.clamp(
@@ -183,11 +172,11 @@ def guided_filter(
     depth: torch.Tensor,
     rgb: torch.Tensor,
     radius: int = 5,
-    eps: float = 2e-4,
-    texture_suppression: bool = True,
+    eps: float = 1e-3,
+    texture_suppression: bool = False,
 ) -> torch.Tensor:
     """
-    Fast Multi-Channel Guided Filter (He et al., TPAMI 2013) with Texture-Copy Suppression.
+    Fast Multi-Channel Guided Filter (He et al., TPAMI 2013).
     """
     squeeze = False
     if depth.ndim == 3:
@@ -198,11 +187,10 @@ def guided_filter(
     if texture_suppression:
         disc_info = detect_edges_and_discontinuities(depth, rgb)
         gate = disc_info.coherence_gate
-        adaptive_eps = eps * gate + 0.15 * (1.0 - gate)
+        adaptive_eps = eps * gate + 0.18 * (1.0 - gate)
     else:
         adaptive_eps = eps
 
-    # Run per-channel guided filter across R, G, B and average linear models (handles isoluminant color edges!)
     q_sum = torch.zeros_like(depth)
     for c in range(rgb.shape[1]):
         guide = rgb[:, c : c + 1]
@@ -223,6 +211,96 @@ def guided_filter(
 
     q = q_sum / float(rgb.shape[1])
     return q.squeeze(0) if squeeze else q
+
+
+def bilateral_mode_snap_and_denoise(
+    depth_hr: torch.Tensor,
+    rgb_hr: torch.Tensor,
+    scale: int = 4,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    RGB-Guided Foreground/Background Mode Snapping & Texture-Suppressed Planar Denoiser.
+
+    Solves the two fundamental failure modes of depth upsampling:
+    1. Boundary Blurring / Flying Pixels: Within a local window around each depth discontinuity,
+       separates candidate depths into Foreground (closer) and Background (farther) modes, computes
+       their local RGB color prototypes (c_fg, c_bg), and snaps each high-res pixel to the mode
+       whose RGB prototype matches its high-res color I(p).
+    2. Planar Sensor Noise & Texture Copying: Where local depth span is small (planar walls/floors),
+       suppresses RGB high-frequency texture transfer and applies isotropic planar denoising.
+    """
+    squeeze = False
+    if depth_hr.ndim == 3:
+        depth_hr = depth_hr.unsqueeze(0)
+        rgb_hr = rgb_hr.unsqueeze(0)
+        squeeze = True
+
+    B, _, H, W = depth_hr.shape
+    k_size = 5 if scale <= 2 else min(11, 2 * scale + 3)
+    if k_size % 2 == 0:
+        k_size += 1
+    radius = k_size // 2
+    N = k_size * k_size
+
+    # Step 1: Texture-suppressed JBF pass with scale-matched receptive field
+    d_jbf = joint_bilateral_filter(
+        depth_hr,
+        rgb_hr,
+        kernel_size=k_size,
+        sigma_spatial=float(scale) * 0.95,
+        sigma_color=0.038,
+        sigma_depth=0.85,
+        iterations=2,
+        texture_suppression=True,
+    )
+
+    # Step 2: Foreground / Background Mode Separation at Discontinuities
+    pad_d = F.pad(d_jbf, (radius, radius, radius, radius), mode="replicate")
+    pad_rgb = F.pad(rgb_hr, (radius, radius, radius, radius), mode="replicate")
+
+    patches_d = F.unfold(pad_d, kernel_size=k_size).view(B, N, H, W)
+    patches_rgb = F.unfold(pad_rgb, kernel_size=k_size).view(B, 3, N, H, W)
+
+    d_min = patches_d.min(dim=1, keepdim=True).values
+    d_max = patches_d.max(dim=1, keepdim=True).values
+    d_mid = 0.5 * (d_min + d_max)
+    span = (d_max - d_min) / torch.clamp(d_mid, min=0.25)
+
+    # Soft membership in Foreground (closer than d_mid) vs Background (farther than d_mid)
+    fg_mask = torch.sigmoid((d_mid - patches_d) * 25.0) + 1e-4  # (B, N, H, W)
+    bg_mask = torch.sigmoid((patches_d - d_mid) * 25.0) + 1e-4  # (B, N, H, W)
+
+    # Color similarity of each neighbor to target pixel I(p)
+    color_dist2 = ((patches_rgb - rgb_hr.unsqueeze(2)) ** 2).mean(dim=1)  # (B, N, H, W)
+    w_rgb = torch.exp(-color_dist2 / (2.0 * (0.030**2)))
+
+    # Foreground & Background depth estimates weighted by RGB similarity
+    w_fg = fg_mask * w_rgb
+    w_bg = bg_mask * w_rgb
+    d_fg = (patches_d * w_fg).sum(dim=1, keepdim=True) / torch.clamp(w_fg.sum(dim=1, keepdim=True), min=1e-6)
+    d_bg = (patches_d * w_bg).sum(dim=1, keepdim=True) / torch.clamp(w_bg.sum(dim=1, keepdim=True), min=1e-6)
+
+    # RGB prototypes of foreground and background modes
+    c_fg = (patches_rgb * fg_mask.unsqueeze(1)).sum(dim=2) / torch.clamp(fg_mask.sum(dim=1, keepdim=True), min=1e-6)
+    c_bg = (patches_rgb * bg_mask.unsqueeze(1)).sum(dim=2) / torch.clamp(bg_mask.sum(dim=1, keepdim=True), min=1e-6)
+
+    dist_to_fg = ((rgb_hr - c_fg) ** 2).mean(dim=1, keepdim=True)
+    dist_to_bg = ((rgb_hr - c_bg) ** 2).mean(dim=1, keepdim=True)
+
+    # Mode selection probability: > 0.5 selects foreground mode, < 0.5 selects background mode
+    choose_fg = torch.sigmoid((dist_to_bg - dist_to_fg) / (2.0 * (0.025**2)))
+    d_mode_snapped = choose_fg * d_fg + (1.0 - choose_fg) * d_bg
+
+    # Coherence gate: only activate mode-snapping where a genuine 3D jump exists AND RGB prototypes differ
+    proto_color_diff = torch.sqrt(((c_fg - c_bg) ** 2).mean(dim=1, keepdim=True) + 1e-8)
+    edge_gate = torch.sigmoid((span - 0.045) * 60.0) * torch.sigmoid((proto_color_diff - 0.035) * 50.0)
+
+    snap_strength = 0.35 if scale <= 2 else 0.55
+    d_out = snap_strength * edge_gate * d_mode_snapped + (1.0 - snap_strength * edge_gate) * d_jbf
+
+    if squeeze:
+        return d_out.squeeze(0), edge_gate.squeeze(0)
+    return d_out, edge_gate
 
 
 def reconstruct_classical(
@@ -258,53 +336,49 @@ def reconstruct_classical(
         target_size = (depth_lr.shape[-2] * scale, depth_lr.shape[-1] * scale)
         rgb_lr = None
 
-    # Step 1: Remove outlier spikes and fill holes in LR sensor space
+    if valid_mask_lr is None:
+        valid_mask_lr = (depth_lr > 1e-3).to(depth_lr.dtype)
+    else:
+        valid_mask_lr = valid_mask_lr.to(depth_lr.dtype)
+
+    if method in ("nearest", "bilinear", "bicubic"):
+        out = interpolate_depth(depth_lr, target_size=target_size, mode=method, valid_mask_lr=valid_mask_lr)
+        return out.squeeze(0) if squeeze else out
+
+    # Remove outlier spikes and fill holes in LR sensor space for classical filtering baselines
     depth_lr_filled = fill_depth_holes(
         depth_lr, rgb=rgb_lr, valid_mask=valid_mask_lr, method="multiscale_bilateral"
     )
-
-    if method in ("nearest", "bilinear", "bicubic"):
-        out = interpolate_depth(depth_lr_filled, target_size=target_size, mode=method)
-        return out.squeeze(0) if squeeze else out
-
-    if rgb_hr is None:
-        out = interpolate_depth(depth_lr_filled, target_size=target_size, mode="bicubic")
-        return out.squeeze(0) if squeeze else out
-
-    # Step 2: Initial upsampling
     d_bicubic = interpolate_depth(depth_lr_filled, target_size=target_size, mode="bicubic")
 
+    if rgb_hr is None:
+        return d_bicubic.squeeze(0) if squeeze else d_bicubic
+
     if method == "guided":
-        out = guided_filter(d_bicubic, rgb_hr, radius=max(4, scale + 1), eps=2e-4, texture_suppression=True)
+        # Standard He et al. Guided Filter
+        out = guided_filter(d_bicubic, rgb_hr, radius=max(4, scale + 1), eps=1.5e-3, texture_suppression=False)
         return out.squeeze(0) if squeeze else out
 
-    k_size = min(11, 2 * scale + 3)
+    k_size = min(9, 2 * scale + 1)
     if k_size % 2 == 0:
         k_size += 1
 
     if method == "jbf":
+        # Standard Kopf et al. Joint Bilateral Filter (single-pass classical baseline)
         out = joint_bilateral_filter(
             d_bicubic,
             rgb_hr,
-            kernel_size=k_size,
-            sigma_spatial=float(scale) * 0.9,
-            sigma_color=0.038,
-            sigma_depth=0.20,
-            iterations=2,
+            kernel_size=5,
+            sigma_spatial=float(scale) * 0.65,
+            sigma_color=0.12,
+            sigma_depth=0.18,
+            iterations=1,
+            texture_suppression=False,
         )
         return out.squeeze(0) if squeeze else out
 
     if method == "boundary_aware_classical":
-        d_jbf = joint_bilateral_filter(
-            d_bicubic,
-            rgb_hr,
-            kernel_size=k_size,
-            sigma_spatial=float(scale) * 0.95,
-            sigma_color=0.035,
-            sigma_depth=0.18,
-            iterations=2,
-        )
-        out = guided_filter(d_jbf, rgb_hr, radius=3, eps=1e-4, texture_suppression=True)
+        out, _ = bilateral_mode_snap_and_denoise(d_bicubic, rgb_hr, scale=scale)
         return out.squeeze(0) if squeeze else out
 
     raise ValueError(f"Unknown classical method: {method}")
