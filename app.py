@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict
 
 import cv2
+import matplotlib as mpl
 import matplotlib.cm as cm
 import numpy as np
 import pandas as pd
@@ -55,7 +56,10 @@ def colorize_depth(
         valid = depth[depth > 1e-3]
         vmax = float(np.percentile(valid, 98)) if valid.size > 0 else 6.0
     norm = np.clip((depth - vmin) / max(vmax - vmin, 1e-6), 0.0, 1.0)
-    cmap = cm.get_cmap(cmap_name)
+    try:
+        cmap = mpl.colormaps[cmap_name]
+    except Exception:
+        cmap = cm.get_cmap(cmap_name)
     rgb = (cmap(norm)[..., :3] * 255.0).astype(np.uint8)
     if invalid_mask is not None:
         rgb[invalid_mask] = np.array([25, 25, 30], dtype=np.uint8)
