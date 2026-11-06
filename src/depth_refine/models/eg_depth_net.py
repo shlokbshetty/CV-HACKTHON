@@ -172,6 +172,15 @@ class AnisotropicSpatialPropagation(nn.Module):
         raw_aff = self.guidance_head(features)  # (B, 9, H, W)
         aff = F.softmax(raw_aff, dim=1)
 
+        # Gate neighbor affinities by (1.0 - edge_gate) to mathematically prevent
+        # cross-boundary diffusion at geometric occlusion edges.
+        # Center pixel (index 4) retains self-weight.
+        gate = torch.clamp((1.0 - edge_gate), min=0.01) ** 2.0
+        ones = torch.ones_like(gate)
+        gate_9 = torch.cat([gate.repeat(1, 4, 1, 1), ones, gate.repeat(1, 4, 1, 1)], dim=1)
+        aff_gated = aff * gate_9
+        aff = aff_gated / torch.clamp(aff_gated.sum(dim=1, keepdim=True), min=1e-6)
+
         anchor_w = 0.35 * self.confidence_head(features)
 
         d_cur = coarse_depth
@@ -304,7 +313,16 @@ class EGDepthNet(nn.Module):
 
         # Foreground/Background Mode-Snapped & Texture-Suppressed Geometric Basis
         d_anchor, coherence_prior = bilateral_mode_snap_and_denoise(d_bicubic, rgb_hr, scale=scale)
-        d_gx, d_gy, d_mag = compute_spatial_gradients(d_anchor)
+
+        # Normalize depth inputs to stable unit scale for neural processing, then restore metric scale
+        d_mean = d_anchor.mean(dim=(2, 3), keepdim=True)
+        d_std = torch.clamp(d_anchor.std(dim=(2, 3), keepdim=True), min=0.25)
+        d_bic_norm = (d_bicubic - d_mean) / d_std
+        d_near_norm = (d_nearest - d_mean) / d_std
+        d_anc_norm = (d_anchor - d_mean) / d_std
+
+        # Scale-invariant geometric gradients computed on normalized depth
+        d_gx, d_gy, d_mag = compute_spatial_gradients(d_anc_norm)
 
         # Luminance gradients for RGB stream
         luma = 0.299 * rgb_hr[:, 0:1] + 0.587 * rgb_hr[:, 1:2] + 0.114 * rgb_hr[:, 2:3]
@@ -313,13 +331,6 @@ class EGDepthNet(nn.Module):
         scale_channel = torch.full((B, 1, H, W), float(scale) / 8.0, device=device, dtype=dtype)
         mask_hr = F.interpolate(valid_mask_lr, size=(H, W), mode="nearest")
         mask_hr = torch.clamp(mask_hr, min=0.2)
-
-        # Normalize depth inputs to stable unit scale for neural processing, then restore metric scale
-        d_mean = d_anchor.mean(dim=(2, 3), keepdim=True)
-        d_std = torch.clamp(d_anchor.std(dim=(2, 3), keepdim=True), min=0.25)
-        d_bic_norm = (d_bicubic - d_mean) / d_std
-        d_near_norm = (d_nearest - d_mean) / d_std
-        d_anc_norm = (d_anchor - d_mean) / d_std
 
         depth_in = torch.cat([d_bic_norm, d_near_norm, d_anc_norm, d_gx, d_gy, scale_channel], dim=1)
         rgb_in = torch.cat([rgb_hr, rgb_gx, rgb_gy], dim=1)
@@ -337,8 +348,11 @@ class EGDepthNet(nn.Module):
         coh_low = F.avg_pool2d(coherence_prior, kernel_size=2, stride=2)
         fused_low, _ = self.egca_low(fd2, fr2, d_mag_low, coh_low)
 
-        # Upsample & fuse at full resolution
+        # Upsample & fuse at full resolution with anti-aliasing to eradicate PixelShuffle checkerboards
         up_feat = self.up_fuse(fused_low)
+        up_feat = 0.65 * up_feat + 0.35 * F.avg_pool2d(
+            F.pad(up_feat, (1, 1, 1, 1), mode="replicate"), kernel_size=3, stride=1
+        )
         if up_feat.shape[-2:] != (H, W):
             up_feat = F.interpolate(up_feat, size=(H, W), mode="bilinear", align_corners=False)
 
@@ -349,11 +363,13 @@ class EGDepthNet(nn.Module):
         residual = self.residual_head(dec_feat) * torch.clamp(self.residual_gain, min=0.01, max=1.5) * d_std
         coarse_depth = torch.clamp(d_anchor + residual, min=0.05)
 
-        # Anisotropic Spatial Propagation refinement
+        # Anisotropic Spatial Propagation refinement with edge gating
         depth_hr = self.aspn(coarse_depth, d_anchor, dec_feat, edge_gate)
         depth_hr = torch.clamp(depth_hr, min=0.05)
 
-        uncertainty = self.uncertainty_head(dec_feat) + 1e-3
+        # Anti-aliased uncertainty map (eradicating high-frequency checkerboard harmonics)
+        raw_unc = self.uncertainty_head(dec_feat)
+        uncertainty = F.avg_pool2d(F.pad(raw_unc, (1, 1, 1, 1), mode="replicate"), kernel_size=3, stride=1) + 1e-3
 
         if squeeze:
             return EGDepthOutput(

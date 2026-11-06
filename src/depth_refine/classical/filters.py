@@ -109,21 +109,29 @@ def joint_bilateral_filter(
     sigma_depth: float = 0.35,
     iterations: int = 1,
     texture_suppression: bool = False,
+    valid_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
-    Joint Bilateral Filter (JBF, Kopf et al.).
+    Joint Bilateral Filter (JBF, Kopf et al.) with valid-mask normalized convolution.
     When `texture_suppression=True`, modulates color bandwidth by the 3D discontinuity coherence gate.
     """
     squeeze = False
     if depth.ndim == 3:
         depth = depth.unsqueeze(0)
         rgb = rgb.unsqueeze(0)
+        if valid_mask is not None and valid_mask.ndim == 3:
+            valid_mask = valid_mask.unsqueeze(0)
         squeeze = True
 
     B, _, H, W = depth.shape
     device = depth.device
     dtype = depth.dtype
     radius = kernel_size // 2
+
+    if valid_mask is None:
+        valid_mask = ((depth > 1e-3) & torch.isfinite(depth)).to(dtype)
+    else:
+        valid_mask = ((valid_mask > 0.5) & (depth > 1e-3) & torch.isfinite(depth)).to(dtype)
 
     coords = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
     yy, xx = torch.meshgrid(coords, coords, indexing="ij")
@@ -133,6 +141,9 @@ def joint_bilateral_filter(
     pad_rgb = F.pad(rgb, (radius, radius, radius, radius), mode="replicate")
     patches_rgb = F.unfold(pad_rgb, kernel_size=kernel_size).view(B, 3, kernel_size * kernel_size, H, W)
     color_dist2 = ((patches_rgb - rgb.unsqueeze(2)) ** 2).mean(dim=1)
+
+    pad_m = F.pad(valid_mask, (radius, radius, radius, radius), mode="constant", value=0.0)
+    patches_m = F.unfold(pad_m, kernel_size=kernel_size).view(B, kernel_size * kernel_size, H, W)
 
     if texture_suppression:
         disc_info = detect_edges_and_discontinuities(depth, rgb)
@@ -146,17 +157,20 @@ def joint_bilateral_filter(
 
     d_cur = depth.clone()
     for _ in range(iterations):
-        pad_d = F.pad(d_cur, (radius, radius, radius, radius), mode="replicate")
+        pad_d = F.pad(d_cur * valid_mask, (radius, radius, radius, radius), mode="replicate")
         patches_d = F.unfold(pad_d, kernel_size=kernel_size).view(B, kernel_size * kernel_size, H, W)
 
         depth_dist2 = (patches_d - d_cur) ** 2
-        w_depth_planar = torch.exp(-depth_dist2 / (2.0 * sigma_depth * sigma_depth))
+        # Scale-adaptive depth range bandwidth to support both indoor (NYU) and outdoor (KITTI LiDAR) depths
+        depth_scale = torch.clamp(d_cur.mean(dim=(2, 3), keepdim=True) / 2.5, min=0.5, max=15.0)
+        eff_sigma_d = sigma_depth * depth_scale
+        w_depth_planar = torch.exp(-depth_dist2 / (2.0 * eff_sigma_d * eff_sigma_d + 1e-8))
         w_depth = gate_2d + (1.0 - gate_2d) * w_depth_planar if texture_suppression else w_depth_planar
 
-        weights = w_spatial * w_color * w_depth
-        d_cur = (patches_d * weights).sum(dim=1, keepdim=True) / torch.clamp(
-            weights.sum(dim=1, keepdim=True), min=1e-8
-        )
+        weights = w_spatial * w_color * w_depth * patches_m
+        weight_sum = weights.sum(dim=1, keepdim=True)
+        filtered = (patches_d * weights).sum(dim=1, keepdim=True) / torch.clamp(weight_sum, min=1e-8)
+        d_cur = torch.where(weight_sum > 1e-5, filtered, d_cur)
 
     return d_cur.squeeze(0) if squeeze else d_cur
 
@@ -168,21 +182,41 @@ def _box_filter(x: torch.Tensor, radius: int) -> torch.Tensor:
     return F.avg_pool2d(padded, kernel_size=k, stride=1)
 
 
+def _normalized_box_filter(x: torch.Tensor, mask: torch.Tensor, radius: int) -> torch.Tensor:
+    """Normalized convolution box filter: strictly ignores zero/missing pixels, falling back gracefully."""
+    k = 2 * radius + 1
+    pad_x = F.pad(x * mask, (radius, radius, radius, radius), mode="replicate")
+    pad_m = F.pad(mask, (radius, radius, radius, radius), mode="replicate")
+    sum_x = F.avg_pool2d(pad_x, kernel_size=k, stride=1)
+    sum_m = F.avg_pool2d(pad_m, kernel_size=k, stride=1)
+    norm = sum_x / torch.clamp(sum_m, min=1e-5)
+    fallback = _box_filter(x, radius)
+    return torch.where(sum_m > 1e-4, norm, fallback)
+
+
 def guided_filter(
     depth: torch.Tensor,
     rgb: torch.Tensor,
     radius: int = 5,
     eps: float = 1e-3,
     texture_suppression: bool = False,
+    valid_mask: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
-    Fast Multi-Channel Guided Filter (He et al., TPAMI 2013).
+    Fast Multi-Channel Guided Filter (He et al., TPAMI 2013) with normalized convolution hole masking.
     """
     squeeze = False
     if depth.ndim == 3:
         depth = depth.unsqueeze(0)
         rgb = rgb.unsqueeze(0)
+        if valid_mask is not None and valid_mask.ndim == 3:
+            valid_mask = valid_mask.unsqueeze(0)
         squeeze = True
+
+    if valid_mask is None:
+        valid_mask = ((depth > 1e-3) & torch.isfinite(depth)).to(depth.dtype)
+    else:
+        valid_mask = ((valid_mask > 0.5) & (depth > 1e-3) & torch.isfinite(depth)).to(depth.dtype)
 
     if texture_suppression:
         disc_info = detect_edges_and_discontinuities(depth, rgb)
@@ -195,8 +229,8 @@ def guided_filter(
     for c in range(rgb.shape[1]):
         guide = rgb[:, c : c + 1]
         mean_I = _box_filter(guide, radius)
-        mean_p = _box_filter(depth, radius)
-        mean_Ip = _box_filter(guide * depth, radius)
+        mean_p = _normalized_box_filter(depth, valid_mask, radius)
+        mean_Ip = _normalized_box_filter(guide * depth, valid_mask, radius)
         cov_Ip = mean_Ip - mean_I * mean_p
 
         mean_II = _box_filter(guide * guide, radius)
@@ -337,17 +371,20 @@ def reconstruct_classical(
         rgb_lr = None
 
     if valid_mask_lr is None:
-        valid_mask_lr = (depth_lr > 1e-3).to(depth_lr.dtype)
+        valid_mask_lr = ((depth_lr > 1e-3) & torch.isfinite(depth_lr)).to(depth_lr.dtype)
     else:
-        valid_mask_lr = valid_mask_lr.to(depth_lr.dtype)
+        valid_mask_lr = ((valid_mask_lr > 0.5) & (depth_lr > 1e-3) & torch.isfinite(depth_lr)).to(depth_lr.dtype)
+
+    # 1. First remove sensor outlier spikes & prune isolated floating pixels in LR sensor space
+    depth_clean_lr, mask_clean_lr = remove_depth_outliers(depth_lr, valid_mask_lr)
 
     if method in ("nearest", "bilinear", "bicubic"):
-        out = interpolate_depth(depth_lr, target_size=target_size, mode=method, valid_mask_lr=valid_mask_lr)
+        out = interpolate_depth(depth_clean_lr, target_size=target_size, mode=method, valid_mask_lr=mask_clean_lr)
         return out.squeeze(0) if squeeze else out
 
-    # Remove outlier spikes and fill holes in LR sensor space for classical filtering baselines
+    # 2. Fill missing pockets in LR sensor space using RGB-guided cross-bilateral diffusion
     depth_lr_filled = fill_depth_holes(
-        depth_lr, rgb=rgb_lr, valid_mask=valid_mask_lr, method="multiscale_bilateral"
+        depth_clean_lr, rgb=rgb_lr, valid_mask=mask_clean_lr, method="multiscale_bilateral"
     )
     d_bicubic = interpolate_depth(depth_lr_filled, target_size=target_size, mode="bicubic")
 
@@ -355,8 +392,14 @@ def reconstruct_classical(
         return d_bicubic.squeeze(0) if squeeze else d_bicubic
 
     if method == "guided":
-        # Standard He et al. Guided Filter
-        out = guided_filter(d_bicubic, rgb_hr, radius=max(4, scale + 1), eps=1.5e-3, texture_suppression=False)
+        # Standard He et al. Guided Filter on dense hole-filled bicubic depth
+        out = guided_filter(
+            d_bicubic,
+            rgb_hr,
+            radius=max(4, scale + 1),
+            eps=1.5e-3,
+            texture_suppression=False,
+        )
         return out.squeeze(0) if squeeze else out
 
     k_size = min(9, 2 * scale + 1)
@@ -364,7 +407,7 @@ def reconstruct_classical(
         k_size += 1
 
     if method == "jbf":
-        # Standard Kopf et al. Joint Bilateral Filter (single-pass classical baseline)
+        # Standard Kopf et al. Joint Bilateral Filter on dense hole-filled bicubic depth
         out = joint_bilateral_filter(
             d_bicubic,
             rgb_hr,

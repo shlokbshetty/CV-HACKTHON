@@ -206,34 +206,27 @@ class HybridReconstructor:
             residual_hr = F.interpolate(residual_lr, size=(H, W), mode="bilinear", align_corners=False)
             d_anchored = d_anchored + bp_gain * conf_weight * (1.0 - edge_gate) * residual_hr
 
-        # 3b. Dual-Stream Trilateral Separation:
-        # Planar Stream: Texture-suppressed guided filter minimizes RMSE & prevents wallpaper bleed
+        # 3b. Dual-Stream Boundary-Preserving Fusion:
+        # Planar Stream: Texture-suppressed guided filter smooths planar sensor noise & wallpaper bleed
         d_planar = guided_filter(
-            d_anchored, rgb_hr, radius=max(3, scale), eps=1e-4, texture_suppression=True
-        )
-
-        # Boundary Stream: Fine sub-pixel Joint Bilateral filter preserves sharp step discontinuities
-        polish_k = 3 if scale <= 2 else 5
-        d_boundary = joint_bilateral_filter(
             d_anchored,
             rgb_hr,
-            kernel_size=polish_k,
-            sigma_spatial=1.0 if scale <= 2 else 1.6,
-            sigma_color=0.028,
-            sigma_depth=0.18,
-            iterations=1,
+            radius=max(3, scale),
+            eps=1e-4,
             texture_suppression=True,
         )
 
-        # Dynamic Edge-Coherence Fusion
-        d_fused = (1.0 - edge_gate) * d_planar + edge_gate * d_boundary
+        # Dynamic Edge-Coherence Fusion:
+        # Planar regions (edge_gate -> 0) receive guided filtering to suppress noise and optimize RMSE.
+        # Boundary regions (edge_gate -> 1) retain 100% of the sharp neural EG-DepthNet step edge without cross-boundary smoothing!
+        d_fused = (1.0 - edge_gate) * d_planar + edge_gate * d_deep
 
         # 3c. Edge-Gated Morphological Shock Filter (snaps 1-px boundary ramps to crisp step discontinuities)
         d_erode = -F.max_pool2d(-d_fused, kernel_size=3, stride=1, padding=1)
         d_dilate = F.max_pool2d(d_fused, kernel_size=3, stride=1, padding=1)
         d_mid_local = 0.5 * (d_erode + d_dilate)
         shock_target = torch.where(d_fused <= d_mid_local, d_erode, d_dilate)
-        shock_gate = torch.clamp((edge_gate - 0.35) / 0.65, min=0.0, max=1.0) * 0.22
+        shock_gate = torch.clamp((edge_gate - 0.40) / 0.60, min=0.0, max=1.0) * 0.30
         d_hybrid = (1.0 - shock_gate) * d_fused + shock_gate * shock_target
         d_hybrid = torch.clamp(d_hybrid, min=0.05)
 
