@@ -120,7 +120,7 @@ def fill_depth_holes(
             d_np = depth_clean[b, 0].detach().cpu().numpy().astype(np.float32)
             m_np = (mask_clean[b, 0].detach().cpu().numpy() <= 0.5).astype(np.uint8)
             if m_np.any() and (m_np == 0).any():
-                filled_np = cv2.inpaint(d_np, m_np, inpaintRadius=4.0, flags=cv_flag)
+                filled_np = cv2.inpaint(d_np, m_np, inpaintRadius=7.0, flags=cv_flag)
             else:
                 filled_np = d_np
             out_list.append(torch.from_numpy(filled_np).to(device=depth.device, dtype=depth.dtype))
