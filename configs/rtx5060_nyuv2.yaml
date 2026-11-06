@@ -1,0 +1,42 @@
+# Training Configuration for Teammate's NVIDIA RTX 5060 (8GB VRAM, 24GB System RAM)
+experiment_name: "eg_depthnet_rtx5060_sota"
+
+hardware:
+  device: "cuda"
+  precision: "bf16"          # Native Blackwell (RTX 5060) & Ada (RTX 4050) Tensor Core bfloat16
+  cache_in_ram: true         # Fits full 2.8GB NYUv2 + Middlebury + KITTI in 24GB System RAM
+  num_workers: 4
+  pin_memory: true
+
+data:
+  root_dir: "data"
+  train_dataset: "nyuv2"
+  val_datasets: ["nyuv2", "middlebury", "kitti"]
+  crop_size: 256
+  multi_scale_choices: [2, 4, 8]
+  hole_ratio: 0.10
+  structured_boundary_holes: true
+  noise_std: 0.015
+  outlier_prob: 0.005
+
+model:
+  base_channels: 48
+  prop_steps: 4
+  ema_decay: 0.995
+
+training:
+  epochs: 60
+  batch_size: 12             # Uses ~5.4 GB / 8.0 GB VRAM in bf16 at 256x256
+  learning_rate: 0.0004
+  min_lr: 0.00001
+  weight_decay: 0.0001
+  grad_clip_norm: 1.0
+  save_dir: "checkpoints"
+
+loss:
+  w_charbonnier: 1.0
+  w_grad: 0.65
+  w_normal: 0.35
+  w_smooth: 0.15
+  w_uncertainty: 0.05
+  boundary_weight_multiplier: 3.0
