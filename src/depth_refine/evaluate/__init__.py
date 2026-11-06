@@ -21,3 +21,4 @@ __all__ = [
     "compute_ssim",
     "measure_runtime_and_memory",
 ]
+

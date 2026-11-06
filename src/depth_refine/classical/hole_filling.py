@@ -203,3 +203,4 @@ def fill_depth_holes(
         return d_iter.squeeze(0) if squeeze else d_iter
 
     raise ValueError(f"Unknown hole filling method: {method}")
+

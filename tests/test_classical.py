@@ -72,3 +72,4 @@ def test_edge_aware_filters_and_texture_suppression() -> None:
     for m in ("nearest", "bilinear", "bicubic", "guided", "jbf", "boundary_aware_classical"):
         rec = reconstruct_classical(depth[:, ::4, ::4], rgb_hr=rgb, scale=4, method=m)
         assert rec.shape == (1, 64, 64)
+

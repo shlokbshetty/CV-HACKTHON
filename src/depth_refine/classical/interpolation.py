@@ -86,3 +86,4 @@ def interpolate_depth(
         raise ValueError(f"Unsupported interpolation mode: {mode}")
 
     return out.squeeze(0) if squeeze else out
+

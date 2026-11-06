@@ -196,3 +196,4 @@ def measure_runtime_and_memory(
     # Approximate tensor footprint on CPU
     peak_mb = float(out.numel() * out.element_size() * 8.0 / (1024.0 * 1024.0))
     return out, latency_ms, max(peak_mb, 1.2)
+
