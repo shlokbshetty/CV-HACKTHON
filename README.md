@@ -62,14 +62,28 @@ uv run python scripts/train.py --config configs/rtx5060_nyuv2.yaml
 - Uses `bfloat16` AMP across $2\times, 4\times, 8\times$ scales with **Exponential Moving Average (EMA)** weights.
 - Saves the best weights to `checkpoints/eg_depthnet_best.pt`.
 
-### Step 5: Run Full Evaluation & Launch the Interactive Web App
+### Step 5: Run Full Evaluation, Ablation Study & Launch the Interactive Web App
 ```powershell
 # Generate Markdown & JSON Benchmark Reports across 2x, 4x, 8x:
 uv run python scripts/evaluate.py --datasets nyuv2 middlebury kitti --scales 2 4 8
 
+# Run 8-Stage Controlled Ablation Study (A1 -> A8):
+uv run python scripts/run_ablation.py
+
 # Launch Interactive Streamlit Dashboard (2D/3D Point Cloud + Boundary Inspector):
 uv run streamlit run app.py
 ```
+
+### Step 6: Public Deployment (Streamlit Community Cloud / HuggingFace Spaces / Docker)
+- **Streamlit Community Cloud (1-Click Public URL)**:
+  1. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub.
+  2. Select repository `shlokbshetty/CV-HACKTHON`, branch `main`, and main file path `app.py`.
+  3. Click **Deploy** — `requirements.txt` and `.streamlit/config.toml` are pre-configured at the repository root.
+- **Docker Container**:
+  ```bash
+  docker build -t depth-refine-p4 . && docker run -p 8501:8501 depth-refine-p4
+  ```
+- **Hackathon Submission Document**: See [`eval_P4_TeamID.md`](./eval_P4_TeamID.md) for the complete evaluation report, system architecture diagram, strict NYUv2 train/test split verification, multi-scale benchmarks, 8-stage ablation study, and documented failure cases.
 
 ---
 

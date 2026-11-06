@@ -2,6 +2,7 @@
 
 from depth_refine.classical.filters import (
     DiscontinuityAnalysis,
+    bilateral_mode_snap_and_denoise,
     compute_spatial_gradients,
     detect_edges_and_discontinuities,
     guided_filter,
@@ -13,6 +14,7 @@ from depth_refine.classical.interpolation import interpolate_depth
 
 __all__ = [
     "DiscontinuityAnalysis",
+    "bilateral_mode_snap_and_denoise",
     "compute_spatial_gradients",
     "detect_edges_and_discontinuities",
     "fill_depth_holes",
@@ -22,4 +24,3 @@ __all__ = [
     "reconstruct_classical",
     "remove_depth_outliers",
 ]
-

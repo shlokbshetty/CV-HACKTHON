@@ -1,27 +1,29 @@
 """
-Multi-Scale Training Pipeline for EG-DepthNet (2x, 4x, 8x Joint Training).
+Multi-Scale Training Pipeline for EG-DepthNet (2x, 4x, 8x Joint Training) with Early Stopping
+and Automated Training/Validation Curve Plotting.
 
 Optimized for:
 - Teammate's NVIDIA RTX 5060 (8GB VRAM, 24GB RAM) via `--config configs/rtx5060_nyuv2.yaml`
-- Local NVIDIA RTX 4050 (6GB VRAM) via `--quick-pretrain` for fast checkpoint initialization & verification.
+- Local NVIDIA RTX 4050 (6GB VRAM) via `--quick-pretrain`
 """
 
 from __future__ import annotations
 
 import argparse
 import copy
+import json
 import time
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
+import matplotlib.pyplot as plt
 import torch
 import yaml
 from rich.console import Console
-from rich.table import Table
 from torch.utils.data import DataLoader
 
 from depth_refine.data.dataset_registry import load_dataset
-from depth_refine.data.degradation import DegradationConfig
+from depth_refine.data.degradation import DegradationConfig, degrade_depth
 from depth_refine.evaluate.metrics import compute_depth_metrics
 from depth_refine.models.eg_depth_net import EGDepthNet
 from depth_refine.models.losses import GeometryAwareDepthLoss
@@ -70,6 +72,49 @@ def validate(
     return {k: v / max(count, 1) for k, v in totals.items()}
 
 
+def save_training_curves(history: List[Dict[str, Any]], output_dir: Path = Path("outputs")) -> None:
+    """Save training & validation learning curves to JSON and PNG."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_path = output_dir / "training_history.json"
+    json_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
+
+    if len(history) < 2:
+        return
+
+    epochs = [h["epoch"] for h in history]
+    losses = [h["train_loss"] for h in history]
+    rmses = [h["val_rmse"] for h in history]
+    b_rmses = [h["val_boundary_rmse"] for h in history]
+    psnrs = [h["val_psnr"] for h in history]
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.2), dpi=140)
+    axes[0].plot(epochs, losses, marker="o", color="#2563eb", linewidth=2, label="Train Composite Loss")
+    axes[0].set_title("Training Loss Curve")
+    axes[0].set_xlabel("Epoch")
+    axes[0].set_ylabel("Loss")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend()
+
+    axes[1].plot(epochs, rmses, marker="s", color="#059669", linewidth=2, label="Val 4× RMSE (m)")
+    axes[1].plot(epochs, b_rmses, marker="^", color="#d97706", linewidth=2, label="Val 4× Boundary-RMSE (m)")
+    axes[1].set_title("Validation RMSE & Boundary-RMSE ↓")
+    axes[1].set_xlabel("Epoch")
+    axes[1].set_ylabel("Error (meters)")
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend()
+
+    axes[2].plot(epochs, psnrs, marker="d", color="#7c3aed", linewidth=2, label="Val 4× PSNR (dB)")
+    axes[2].set_title("Validation PSNR (dB) ↑")
+    axes[2].set_xlabel("Epoch")
+    axes[2].set_ylabel("PSNR (dB)")
+    axes[2].grid(True, alpha=0.3)
+    axes[2].legend()
+
+    plt.tight_layout()
+    plt.savefig(output_dir / "training_curves.png", bbox_inches="tight")
+    plt.close(fig)
+
+
 def train(config: Dict[str, Any], quick_pretrain: bool = False) -> Path:
     hw_cfg = config.get("hardware", {})
     data_cfg = config.get("data", {})
@@ -86,6 +131,7 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False) -> Path:
     )
 
     epochs = 8 if quick_pretrain else int(train_cfg.get("epochs", 60))
+    patience = int(train_cfg.get("early_stopping_patience", 12))
     batch_size = 4 if quick_pretrain else int(train_cfg.get("batch_size", 12))
     crop_size = 192 if quick_pretrain else int(data_cfg.get("crop_size", 256))
     lr = float(train_cfg.get("learning_rate", 4e-4))
@@ -102,6 +148,7 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False) -> Path:
     )
 
     dataset_name = "synthetic" if quick_pretrain else data_cfg.get("train_dataset", "nyuv2")
+    # Strictly split train (first 795 on NYUv2) vs test/val (remaining 654 held-out scenes)
     train_ds = load_dataset(
         name=dataset_name,
         split="train",
@@ -109,14 +156,13 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False) -> Path:
         degradation=deg,
         crop_size=crop_size,
         max_samples=48 if quick_pretrain else None,
-        multi_scale_choices=None,  # Batch-uniform scale sampled per step below
         fallback_to_synthetic=True,
     )
     val_ds = load_dataset(
         name=dataset_name,
         split="test",
         root_dir=data_cfg.get("root_dir", "data"),
-        degradation=DegradationConfig(scale=4, hole_ratio=0.08, noise_std=0.015),
+        degradation=DegradationConfig(scale=4, hole_ratio=0.08, noise_std=0.015, seed=42),
         crop_size=crop_size,
         max_samples=12 if quick_pretrain else 64,
         fallback_to_synthetic=True,
@@ -134,19 +180,11 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False) -> Path:
 
     model = EGDepthNet(
         base_channels=int(model_cfg.get("base_channels", 48)),
-        prop_steps=int(model_cfg.get("prop_steps", 6)),
+        prop_steps=int(model_cfg.get("prop_steps", 4)),
     ).to(device)
 
-    if best_ckpt_path.exists():
-        try:
-            ckpt = torch.load(best_ckpt_path, map_location=device, weights_only=False)
-            model.load_state_dict(ckpt.get("model_state_dict", ckpt), strict=False)
-            console.print(f"[cyan]Warm-started from existing checkpoint {best_ckpt_path}[/cyan]")
-        except Exception:
-            pass
-
     ema_model = copy.deepcopy(model).to(device)
-    ema_decay = float(model_cfg.get("ema_decay", 0.99))
+    ema_decay = float(model_cfg.get("ema_decay", 0.992))
 
     criterion = GeometryAwareDepthLoss(
         w_charbonnier=float(loss_cfg.get("w_charbonnier", 1.0)),
@@ -169,11 +207,14 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False) -> Path:
 
     console.print(
         f"[bold green]Starting EG-DepthNet Training on {device} "
-        f"(AMP={amp_dtype if use_amp else 'fp32'}, Epochs={epochs}, Samples={len(train_ds)})[/bold green]"
+        f"(AMP={amp_dtype if use_amp else 'fp32'}, Epochs={epochs}, EarlyStopPatience={patience}, "
+        f"TrainSamples={len(train_ds)}, HeldOutValSamples={len(val_ds)})[/bold green]"
     )
 
     best_rmse = float("inf")
+    epochs_without_improvement = 0
     scales_cycle = [2, 4, 8]
+    history: List[Dict[str, Any]] = []
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -181,27 +222,32 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False) -> Path:
         running_loss = 0.0
 
         for step, batch in enumerate(train_loader):
-            # Dynamically train across 2x, 4x, and 8x upsampling factors
             scale_step = scales_cycle[(epoch + step) % len(scales_cycle)]
             rgb_hr = batch["rgb_hr"].to(device, non_blocking=True)
             depth_gt = batch["depth_gt"].to(device, non_blocking=True)
             valid_gt = batch["valid_mask_gt"].to(device, non_blocking=True)
             boundary_gt = batch["boundary_mask_gt"].to(device, non_blocking=True)
 
-            # Downsample batch cleanly to `scale_step`
-            H, W = depth_gt.shape[-2], depth_gt.shape[-1]
-            h_s, w_s = H // scale_step, W // scale_step
-            depth_lr = torch.nn.functional.adaptive_avg_pool2d(depth_gt, (h_s, w_s))
-            valid_lr = (torch.nn.functional.adaptive_avg_pool2d(valid_gt, (h_s, w_s)) > 0.5).float()
-            # Add sensor noise & random holes during training
-            noise = torch.randn_like(depth_lr) * 0.015 * valid_lr
-            drop = (torch.rand_like(valid_lr) > 0.08).float()
-            valid_lr = valid_lr * drop
-            depth_lr = torch.clamp(depth_lr + noise, min=0.1, max=10.0) * valid_lr
+            step_deg = degrade_depth(
+                depth_gt,
+                rgb_hr,
+                DegradationConfig(
+                    scale=scale_step,
+                    hole_ratio=deg.hole_ratio,
+                    structured_boundary_holes=True,
+                    noise_std=deg.noise_std,
+                    outlier_prob=deg.outlier_prob,
+                ),
+            )
 
             optimizer.zero_grad(set_to_none=True)
             with torch.amp.autocast("cuda", enabled=use_amp, dtype=amp_dtype):
-                out = model(depth_lr, rgb_hr=rgb_hr, scale=scale_step, valid_mask_lr=valid_lr)
+                out = model(
+                    step_deg.depth_lr,
+                    rgb_hr=rgb_hr,
+                    scale=scale_step,
+                    valid_mask_lr=step_deg.valid_mask_lr,
+                )
                 loss_dict = criterion(
                     out,
                     depth_gt=depth_gt,
@@ -229,26 +275,50 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False) -> Path:
         val_metrics = validate(ema_model, val_loader, device=device, scale=4)
         dt = time.perf_counter() - t0
 
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": avg_loss,
+                "val_rmse": val_metrics["RMSE"],
+                "val_boundary_rmse": val_metrics["Boundary_RMSE"],
+                "val_psnr": val_metrics["PSNR"],
+                "val_edge_f1": val_metrics["Edge_F1"],
+            }
+        )
+        save_training_curves(history)
+
         console.print(
             f"Epoch [{epoch:02d}/{epochs:02d}] ({dt:.1f}s) | Loss: {avg_loss:.4f} | "
             f"Val 4x RMSE: {val_metrics['RMSE']:.4f}m | Boundary-RMSE: {val_metrics['Boundary_RMSE']:.4f}m | "
             f"PSNR: {val_metrics['PSNR']:.2f}dB | Edge-F1: {val_metrics['Edge_F1']:.4f}"
         )
 
-        if val_metrics["RMSE"] <= best_rmse:
+        if val_metrics["RMSE"] < best_rmse - 1e-5:
             best_rmse = val_metrics["RMSE"]
+            epochs_without_improvement = 0
             torch.save(
                 {
                     "epoch": epoch,
                     "model_state_dict": model.state_dict(),
                     "ema_state_dict": ema_model.state_dict(),
                     "val_metrics": val_metrics,
+                    "history": history,
                     "config": config,
                 },
                 best_ckpt_path,
             )
+        else:
+            epochs_without_improvement += 1
+            if not quick_pretrain and epochs_without_improvement >= patience:
+                console.print(
+                    f"[bold yellow]Early stopping triggered at epoch {epoch} "
+                    f"(no improvement for {patience} epochs).[/bold yellow]"
+                )
+                break
 
-    console.print(f"[bold green]✓ Saved best checkpoint to {best_ckpt_path} (Best 4x RMSE={best_rmse:.4f}m)[/bold green]")
+    console.print(
+        f"[bold green]✓ Saved best checkpoint to {best_ckpt_path} (Best 4x RMSE={best_rmse:.4f}m)[/bold green]"
+    )
     return best_ckpt_path
 
 
@@ -273,4 +343,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

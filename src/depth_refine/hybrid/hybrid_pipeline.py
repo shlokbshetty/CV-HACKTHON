@@ -23,6 +23,7 @@ import torch
 import torch.nn.functional as F
 
 from depth_refine.classical.filters import (
+    bilateral_mode_snap_and_denoise,
     detect_edges_and_discontinuities,
     guided_filter,
     joint_bilateral_filter,
@@ -191,40 +192,50 @@ class HybridReconstructor:
         uncertainty = model_out.uncertainty
         edge_gate = model_out.edge_gate
 
-        # --- STAGE 3: Uncertainty-Guided Trilateral Energy & Multi-Stream Refinement ---
-        pred_lr = F.adaptive_avg_pool2d(d_deep, depth_lr.shape[-2:])
+        # --- STAGE 3: Iterative Back-Projection (IBP) Sensor Consistency & Dual-Stream Shock Refinement ---
         disc_lr = detect_edges_and_discontinuities(depth_filled_lr, rgb_lr)
         interior_valid_lr = mask_clean_lr * (1.0 - disc_lr.coherence_gate)
-        residual_lr = (depth_filled_lr - pred_lr) * interior_valid_lr
-        residual_hr = F.interpolate(residual_lr, size=(H, W), mode="bilinear", align_corners=False)
-        conf_weight = torch.clamp(1.0 / (1.0 + uncertainty * 2.0), min=0.15, max=0.65)
-        d_anchored = d_deep + 0.35 * conf_weight * (1.0 - edge_gate) * residual_hr
+        conf_weight = torch.clamp(1.0 / (1.0 + uncertainty * 2.0), min=0.15, max=0.55)
+        bp_gain = 0.22 if scale <= 2 else 0.35
 
-        # 1. Planar Stream: Texture-suppressed guided filter minimizes RMSE & prevents wallpaper bleed
+        # 3a. 2-Step Iterative Back-Projection (IBP) to eliminate low-frequency sensor drift
+        d_anchored = d_deep.clone()
+        for _ in range(2):
+            pred_lr = F.adaptive_avg_pool2d(d_anchored, depth_lr.shape[-2:])
+            residual_lr = (depth_clean_lr - pred_lr) * interior_valid_lr
+            residual_hr = F.interpolate(residual_lr, size=(H, W), mode="bilinear", align_corners=False)
+            d_anchored = d_anchored + bp_gain * conf_weight * (1.0 - edge_gate) * residual_hr
+
+        # 3b. Dual-Stream Trilateral Separation:
+        # Planar Stream: Texture-suppressed guided filter minimizes RMSE & prevents wallpaper bleed
         d_planar = guided_filter(
             d_anchored, rgb_hr, radius=max(3, scale), eps=1e-4, texture_suppression=True
         )
 
-        # 2. Boundary Stream: Fine sub-pixel Joint Bilateral filter preserves sharp step discontinuities
-        k_size = min(9, 2 * scale + 1)
-        if k_size % 2 == 0:
-            k_size += 1
+        # Boundary Stream: Fine sub-pixel Joint Bilateral filter preserves sharp step discontinuities
+        polish_k = 3 if scale <= 2 else 5
         d_boundary = joint_bilateral_filter(
             d_anchored,
             rgb_hr,
-            kernel_size=k_size,
-            sigma_spatial=float(scale) * 0.85,
-            sigma_color=0.032,
+            kernel_size=polish_k,
+            sigma_spatial=1.0 if scale <= 2 else 1.6,
+            sigma_color=0.028,
             sigma_depth=0.18,
             iterations=1,
+            texture_suppression=True,
         )
 
-        # 3. Dynamic Edge-Coherence Fusion (preserves sharp object boundaries without planar ringing)
+        # Dynamic Edge-Coherence Fusion
         d_fused = (1.0 - edge_gate) * d_planar + edge_gate * d_boundary
 
-        # 4. Final Sub-Pixel Polish (removes flying pixels along occlusion edges)
-        d_polished = guided_filter(d_fused, rgb_hr, radius=2, eps=1e-5, texture_suppression=True)
-        d_hybrid = torch.clamp(d_polished, min=0.05)
+        # 3c. Edge-Gated Morphological Shock Filter (snaps 1-px boundary ramps to crisp step discontinuities)
+        d_erode = -F.max_pool2d(-d_fused, kernel_size=3, stride=1, padding=1)
+        d_dilate = F.max_pool2d(d_fused, kernel_size=3, stride=1, padding=1)
+        d_mid_local = 0.5 * (d_erode + d_dilate)
+        shock_target = torch.where(d_fused <= d_mid_local, d_erode, d_dilate)
+        shock_gate = torch.clamp((edge_gate - 0.35) / 0.65, min=0.0, max=1.0) * 0.22
+        d_hybrid = (1.0 - shock_gate) * d_fused + shock_gate * shock_target
+        d_hybrid = torch.clamp(d_hybrid, min=0.05)
 
         if squeeze:
             return HybridReconstructionResult(
