@@ -152,6 +152,7 @@ class BenchmarkSuite:
         fallback_to_synthetic: bool = True,
     ) -> List[MethodSummary]:
         summaries: List[MethodSummary] = []
+        canon_name = "middlebury" if dataset_name.lower() in ("middlebury", "middleburry") else dataset_name.lower()
 
         for scale in scales:
             deg_cfg = DegradationConfig(
@@ -161,7 +162,7 @@ class BenchmarkSuite:
                 structured_boundary_holes=True,
             )
             ds = load_dataset(
-                name=dataset_name,
+                name=canon_name,
                 split="test",
                 root_dir=root_dir,
                 degradation=deg_cfg,
@@ -204,7 +205,7 @@ class BenchmarkSuite:
                 avg_metrics = {k: float(np.mean([r[k] for r in rows])) for k in rows[0].keys()}
                 summaries.append(
                     MethodSummary(
-                        dataset=dataset_name,
+                        dataset=canon_name,
                         scale=scale,
                         method=m,
                         label=METHOD_LABELS.get(m, m),
@@ -240,6 +241,7 @@ class BenchmarkSuite:
         out_dir.mkdir(parents=True, exist_ok=True)
         md_path = out_dir / "benchmark_report.md"
         json_path = out_dir / "benchmark_report.json"
+        results_json_path = out_dir / "benchmark_results.json"
 
         md_text = "# Edge-Preserving Depth Upsampling & Refinement Benchmark Report\n\n"
         md_text += BenchmarkSuite.format_markdown_table(summaries) + "\n"
@@ -255,5 +257,7 @@ class BenchmarkSuite:
             }
             for s in summaries
         ]
-        json_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        json_str = json.dumps(payload, indent=2)
+        json_path.write_text(json_str, encoding="utf-8")
+        results_json_path.write_text(json_str, encoding="utf-8")
         return md_path

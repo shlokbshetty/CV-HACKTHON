@@ -381,6 +381,7 @@ class MiddleburyDataset(Dataset):
         depth = torch.from_numpy(depth_crop[None, ...]).float()
         raw = torch.from_numpy(raw_crop[None, ...]).float()
 
+        sample = degrade_depth(depth, rgb, self.degradation, raw_depth_hr=raw)
         return {
             "name": s_dir.name,
             "scale": self.degradation.scale,
@@ -394,32 +395,77 @@ class MiddleburyDataset(Dataset):
 
 
 class KITTIDataset(Dataset):
-    """KITTI Vision Suite Depth Completion Validation loader."""
+    """KITTI Vision Suite Depth Completion Validation loader supporting both official raw PNGs and .npz archives."""
 
     def __init__(
         self,
-        npz_files: List[Path],
+        npz_files: Optional[List[Path]] = None,
+        kitti_dir: Optional[Path] = None,
         degradation: Optional[DegradationConfig] = None,
         crop_size: int = 256,
         max_samples: Optional[int] = None,
         cache_in_ram: bool = True,
         **kwargs: Any,
     ) -> None:
-        self.npz_files = npz_files[:max_samples] if max_samples is not None else npz_files
         self.degradation = degradation or DegradationConfig()
         self.crop_size = crop_size
+        self.cache_in_ram = cache_in_ram
+        self.ram_cache: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+
+        self.kitti_pairs: List[Tuple[Path, Path, Optional[Path]]] = []
+        self.npz_files: List[Path] = []
+
+        if kitti_dir is not None and kitti_dir.exists():
+            gt_dir = kitti_dir / "groundtruth_depth"
+            img_dir = kitti_dir / "image"
+            velo_dir = kitti_dir / "velodyne_raw"
+            gt_files = sorted(list(gt_dir.glob("*.png"))) if gt_dir.exists() else []
+            for gt_p in gt_files:
+                img_name = gt_p.name.replace("groundtruth_depth", "image")
+                img_p = img_dir / img_name
+                velo_name = gt_p.name.replace("groundtruth_depth", "velodyne_raw")
+                velo_p = (velo_dir / velo_name) if velo_dir.exists() else None
+                if img_p.exists():
+                    self.kitti_pairs.append((gt_p, img_p, velo_p if (velo_p and velo_p.exists()) else None))
+            if max_samples is not None:
+                self.kitti_pairs = self.kitti_pairs[:max_samples]
+        elif npz_files is not None:
+            self.npz_files = npz_files[:max_samples] if max_samples is not None else npz_files
 
     def __len__(self) -> int:
-        return len(self.npz_files)
+        return len(self.kitti_pairs) if self.kitti_pairs else len(self.npz_files)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        path = self.npz_files[idx]
-        data = np.load(path)
-        rgb_np = data["rgb"].astype(np.float32)
-        if rgb_np.max() > 1.0:
-            rgb_np /= 255.0
-        depth_np = data["depth"].astype(np.float32)
-        raw_np = data["raw_depth"].astype(np.float32) if "raw_depth" in data else depth_np
+        if self.kitti_pairs:
+            gt_p, img_p, velo_p = self.kitti_pairs[idx]
+            name = gt_p.stem
+            if self.cache_in_ram and idx in self.ram_cache:
+                rgb_np, depth_np, raw_np = self.ram_cache[idx]
+            else:
+                bgr = cv2.imread(str(img_p), cv2.IMREAD_COLOR)
+                rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                gt_raw = cv2.imread(str(gt_p), cv2.IMREAD_UNCHANGED)
+                depth_np = gt_raw.astype(np.float32) / 256.0
+                if velo_p is not None and velo_p.exists():
+                    velo_raw = cv2.imread(str(velo_p), cv2.IMREAD_UNCHANGED)
+                    raw_np = velo_raw.astype(np.float32) / 256.0
+                else:
+                    raw_np = depth_np.copy()
+                if self.cache_in_ram:
+                    self.ram_cache[idx] = (rgb_np, depth_np, raw_np)
+        else:
+            path = self.npz_files[idx]
+            name = path.stem
+            data = np.load(path)
+            rgb_orig = data["rgb"].astype(np.float32)
+            if rgb_orig.ndim == 3 and rgb_orig.shape[0] == 3:
+                rgb_np = rgb_orig.transpose(1, 2, 0)
+            else:
+                rgb_np = rgb_orig
+            if rgb_np.max() > 1.0:
+                rgb_np /= 255.0
+            depth_np = data["depth"].astype(np.float32)
+            raw_np = data["raw_depth"].astype(np.float32) if "raw_depth" in data else depth_np
 
         H, W = depth_np.shape[:2]
         cs = self.crop_size
@@ -440,7 +486,7 @@ class KITTIDataset(Dataset):
 
         sample = degrade_depth(depth, rgb, self.degradation, raw_depth_hr=raw)
         return {
-            "name": path.stem,
+            "name": name,
             "scale": self.degradation.scale,
             "depth_lr": sample.depth_lr,
             "valid_mask_lr": sample.valid_mask_lr,
@@ -500,9 +546,19 @@ def load_dataset(
         raise FileNotFoundError(f"NYU Depth V2 dataset not found at {root / 'nyuv2'}")
 
     # 2. Middlebury Stereo
-    if name == "middlebury":
-        mid_dir = root / "middlebury"
-        scene_dirs = [p for p in mid_dir.iterdir() if p.is_dir()] if mid_dir.exists() else []
+    if name in ("middlebury", "middleburry"):
+        mid_dir = None
+        for cand in [
+            root / "middleburry" / "data",
+            root / "middleburry",
+            root / "middlebury" / "data",
+            root / "middlebury",
+        ]:
+            if cand.exists() and any(p.is_dir() for p in cand.iterdir()):
+                mid_dir = cand
+                break
+
+        scene_dirs = [p for p in mid_dir.iterdir() if p.is_dir()] if mid_dir else []
         if scene_dirs:
             return MiddleburyDataset(
                 scene_dirs=scene_dirs,
@@ -518,10 +574,23 @@ def load_dataset(
                 degradation=deg,
                 seed_offset=200 if split == "train" else 600,
             )
-        raise FileNotFoundError(f"Middlebury Stereo scenes not found in {mid_dir}")
+        raise FileNotFoundError(f"Middlebury Stereo scenes not found in {root}")
 
     # 3. KITTI Depth Completion
     if name == "kitti":
+        kitti_val_dir = root / "kitti" / "depth_selection" / "val_selection_cropped"
+        if not kitti_val_dir.exists():
+            kitti_val_dir = root / "kitti" / "val_selection_cropped"
+
+        if kitti_val_dir.exists() and (kitti_val_dir / "groundtruth_depth").exists():
+            return KITTIDataset(
+                kitti_dir=kitti_val_dir,
+                degradation=deg,
+                crop_size=crop_size,
+                max_samples=max_samples,
+                cache_in_ram=True,
+            )
+
         kitti_dir = root / "kitti"
         npz_files = sorted(list(kitti_dir.glob("*.npz"))) if kitti_dir.exists() else []
         if npz_files:
