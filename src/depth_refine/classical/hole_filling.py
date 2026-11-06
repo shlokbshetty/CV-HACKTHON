@@ -149,25 +149,32 @@ def fill_depth_holes(
                 d_cur = torch.where(fill_here, up_val, d_cur)
                 m_cur = torch.where(fill_here, torch.ones_like(m_cur) * 0.5, m_cur)
 
-        # Refine filled hole pixels using RGB-guided cross-bilateral weights
+        # Refine filled hole pixels using iterative RGB-guided cross-bilateral propagation
+        # so holes adjacent to object boundaries fill strictly from the same-color side of the edge
         if rgb is not None:
-            rgb_resized = F.interpolate(rgb, size=(H, W), mode="bilinear", align_corners=False) if rgb.shape[-2:] != (H, W) else rgb
-            pad_d = F.pad(d_cur, (2, 2, 2, 2), mode="replicate")
-            pad_m = F.pad(m_cur, (2, 2, 2, 2), mode="replicate")
-            pad_rgb = F.pad(rgb_resized, (2, 2, 2, 2), mode="replicate")
-
-            patches_d = F.unfold(pad_d, kernel_size=5).view(B, 25, H, W)
-            patches_m = F.unfold(pad_m, kernel_size=5).view(B, 25, H, W)
-            patches_rgb = F.unfold(pad_rgb, kernel_size=5).view(B, 3, 25, H, W)
-
-            color_diff2 = ((patches_rgb - rgb_resized.unsqueeze(2)) ** 2).sum(dim=1)
-            w_color = torch.exp(-color_diff2 / (2.0 * (0.08**2)))
-            weights = w_color * torch.clamp(patches_m, min=0.05)
-            d_refined = (patches_d * weights).sum(dim=1, keepdim=True) / torch.clamp(
-                weights.sum(dim=1, keepdim=True), min=1e-6
+            rgb_resized = (
+                F.interpolate(rgb, size=(H, W), mode="bilinear", align_corners=False)
+                if rgb.shape[-2:] != (H, W)
+                else rgb
             )
-            # Only overwrite originally missing locations; keep valid measurements anchored
-            d_cur = torch.where(mask_clean > 0.5, depth_clean, d_refined)
+            pad_rgb = F.pad(rgb_resized, (2, 2, 2, 2), mode="replicate")
+            patches_rgb = F.unfold(pad_rgb, kernel_size=5).view(B, 3, 25, H, W)
+            color_diff2 = ((patches_rgb - rgb_resized.unsqueeze(2)) ** 2).sum(dim=1)
+            w_color = torch.exp(-color_diff2 / (2.0 * (0.045**2)))
+
+            # Anchor valid sensor readings with 3x higher confidence than pyramid-interpolated hole estimates
+            conf_map = torch.where(mask_clean > 0.5, torch.ones_like(mask_clean) * 3.0, torch.ones_like(mask_clean) * 0.4)
+            pad_m = F.pad(conf_map, (2, 2, 2, 2), mode="replicate")
+            patches_m = F.unfold(pad_m, kernel_size=5).view(B, 25, H, W)
+            weights = w_color * patches_m
+            norm_weights = weights / torch.clamp(weights.sum(dim=1, keepdim=True), min=1e-6)
+
+            for _ in range(3):
+                pad_d = F.pad(d_cur, (2, 2, 2, 2), mode="replicate")
+                patches_d = F.unfold(pad_d, kernel_size=5).view(B, 25, H, W)
+                d_refined = (patches_d * norm_weights).sum(dim=1, keepdim=True)
+                # Keep valid measurements anchored; propagate iso-color depth into missing regions
+                d_cur = torch.where(mask_clean > 0.5, depth_clean, d_refined)
 
         return d_cur.squeeze(0) if squeeze else d_cur
 

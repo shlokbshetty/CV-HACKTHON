@@ -192,15 +192,19 @@ class HybridReconstructor:
         uncertainty = model_out.uncertainty
         edge_gate = model_out.edge_gate
 
-        # --- STAGE 3: Uncertainty-Guided Bilateral Energy & Sensor Back-Projection Refinement ---
-        pred_lr = F.adaptive_avg_pool2d(d_deep, depth_lr.shape[-2:])
+        # --- STAGE 3: Iterative Back-Projection (IBP) Sensor Consistency & Edge-Gated Shock Refinement ---
         disc_lr = detect_edges_and_discontinuities(depth_filled_lr, rgb_lr)
         interior_valid_lr = mask_clean_lr * (1.0 - disc_lr.coherence_gate)
-        residual_lr = (depth_filled_lr - pred_lr) * interior_valid_lr
-        residual_hr = F.interpolate(residual_lr, size=(H, W), mode="bilinear", align_corners=False)
-        conf_weight = torch.clamp(1.0 / (1.0 + uncertainty * 2.0), min=0.10, max=0.45)
-        bp_gain = 0.12 if scale <= 2 else 0.25
-        d_anchored = d_deep + bp_gain * conf_weight * (1.0 - edge_gate) * residual_hr
+        conf_weight = torch.clamp(1.0 / (1.0 + uncertainty * 2.0), min=0.15, max=0.55)
+        bp_gain = 0.22 if scale <= 2 else 0.35
+
+        # 3a. 2-Step Iterative Back-Projection (IBP) to eliminate low-frequency sensor drift
+        d_anchored = d_deep.clone()
+        for _ in range(2):
+            pred_lr = F.adaptive_avg_pool2d(d_anchored, depth_lr.shape[-2:])
+            residual_lr = (depth_clean_lr - pred_lr) * interior_valid_lr
+            residual_hr = F.interpolate(residual_lr, size=(H, W), mode="bilinear", align_corners=False)
+            d_anchored = d_anchored + bp_gain * conf_weight * (1.0 - edge_gate) * residual_hr
 
         # 3b. Sub-pixel Trilateral Boundary Polish
         polish_k = 3 if scale <= 2 else 5
@@ -209,13 +213,21 @@ class HybridReconstructor:
             rgb_hr,
             kernel_size=polish_k,
             sigma_spatial=1.0 if scale <= 2 else 1.6,
-            sigma_color=0.030,
-            sigma_depth=0.16,
+            sigma_color=0.028,
+            sigma_depth=0.18,
             iterations=1,
             texture_suppression=True,
         )
-        polish_w = 0.35 if scale <= 2 else 0.65
+        polish_w = 0.40 if scale <= 2 else 0.68
         d_hybrid = polish_w * d_polished + (1.0 - polish_w) * d_anchored
+
+        # 3c. Edge-Gated Morphological Shock Filter (snaps 1-px boundary ramps to crisp step discontinuities)
+        d_erode = -F.max_pool2d(-d_hybrid, kernel_size=3, stride=1, padding=1)
+        d_dilate = F.max_pool2d(d_hybrid, kernel_size=3, stride=1, padding=1)
+        d_mid_local = 0.5 * (d_erode + d_dilate)
+        shock_target = torch.where(d_hybrid <= d_mid_local, d_erode, d_dilate)
+        shock_gate = torch.clamp((edge_gate - 0.35) / 0.65, min=0.0, max=1.0) * 0.22
+        d_hybrid = (1.0 - shock_gate) * d_hybrid + shock_gate * shock_target
         d_hybrid = torch.clamp(d_hybrid, min=0.05)
 
         if squeeze:
