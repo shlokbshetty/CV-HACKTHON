@@ -36,7 +36,7 @@ st.set_page_config(
 
 
 @st.cache_resource
-def get_hybrid_engine() -> HybridReconstructor:
+def get_hybrid_engine(ckpt_mtime: float = 0.0) -> HybridReconstructor:
     ckpt = Path("checkpoints/eg_depthnet_best.pt")
     return HybridReconstructor(checkpoint_path=ckpt if ckpt.exists() else None)
 
@@ -142,17 +142,19 @@ def main() -> None:
         "*Benchmarked on NYU Depth V2, Middlebury Stereo (2001–2021), and KITTI Vision Suite.*"
     )
 
-    engine = get_hybrid_engine()
+    ckpt_path = Path("checkpoints/eg_depthnet_best.pt")
+    ckpt_mtime = ckpt_path.stat().st_mtime if ckpt_path.exists() else 0.0
+    engine = get_hybrid_engine(ckpt_mtime=ckpt_mtime)
     device = engine.device
 
     # --- Sidebar Controls ---
     st.sidebar.header("⚙️ Sensor & Reconstruction Controls")
     dataset_choice = st.sidebar.selectbox(
         "Dataset / Source",
-        options=["middlebury", "nyuv2", "kitti", "synthetic", "custom_upload"],
+        options=["nyuv2", "middlebury", "kitti", "synthetic", "custom_upload"],
         format_func=lambda x: {
-            "middlebury": "Middlebury Stereo (2001–2021)",
             "nyuv2": "NYU Depth V2 (Indoor RGB-D)",
+            "middlebury": "Middlebury Stereo (2001–2021)",
             "kitti": "KITTI Vision Suite (Outdoor LiDAR)",
             "synthetic": "3D Texture-Copy Stress Scene",
             "custom_upload": "Upload Custom RGB + Depth",
@@ -171,6 +173,13 @@ def main() -> None:
             value=False,
             help="When checked, includes raw 2011 Kinect v1 hardware absorption blackouts in addition to multi-scale decimation.",
         )
+
+    cmap_choice = st.sidebar.selectbox(
+        "Depth Colormap / Palette",
+        options=["turbo", "plasma", "Spectral_r", "viridis", "inferno", "magma"],
+        index=0,
+        help="Choose visualization colormap. 'turbo' is default scientific; 'plasma' and 'Spectral_r' highlight boundaries like reference papers.",
+    )
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("⚡ Quantization & Acceleration")
@@ -191,6 +200,10 @@ def main() -> None:
         f"**FP32 Weights**: `{q_stats.fp32_size_mb:.2f} MB`  \n"
         f"**INT8 Quantized**: `{q_stats.compressed_size_mb:.2f} MB` (**{q_stats.compression_ratio:.2f}× smaller**)"
     )
+
+    if st.sidebar.button("🔄 Reload Latest Weights Cache"):
+        st.cache_resource.clear()
+        st.rerun()
 
     deg_cfg = DegradationConfig(
         scale=scale,
@@ -475,10 +488,10 @@ def main() -> None:
 
     with tab1:
         st.subheader(f"Scene `{sample['name']}` — {scale}× Depth Upsampling & Refinement")
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5 = st.columns(5)
         c1.image((rgb_np * 255).astype(np.uint8), caption="High-Res RGB Guidance", use_container_width=True)
         lr_up_vis = cv2.resize(
-            colorize_depth(lr_np, vmin, vmax, invalid_mask=~lr_valid_np),
+            colorize_depth(lr_np, vmin, vmax, cmap_name=cmap_choice, invalid_mask=~lr_valid_np),
             (gt_np.shape[1], gt_np.shape[0]),
             interpolation=cv2.INTER_NEAREST,
         )
@@ -488,31 +501,41 @@ def main() -> None:
             use_container_width=True,
         )
         c3.image(
-            colorize_depth(preds["bicubic"], vmin, vmax),
+            colorize_depth(preds["bicubic"], vmin, vmax, cmap_name=cmap_choice),
             caption=f"Bicubic Baseline (RMSE: {bic_row['RMSE']:.4f}m)",
             use_container_width=True,
         )
         c4.image(
-            colorize_depth(preds["hybrid"], vmin, vmax),
+            colorize_depth(preds["hybrid"], vmin, vmax, cmap_name=cmap_choice),
             caption=f"Hybrid EG-DepthNet (RMSE: {best_row['RMSE']:.4f}m)",
             use_container_width=True,
         )
+        c5.image(
+            colorize_depth(gt_np, vmin, vmax, cmap_name=cmap_choice),
+            caption="Ground Truth High-Resolution Target",
+            use_container_width=True,
+        )
 
-        st.markdown("#### Full Method Comparison Matrix (Classical vs. Deep vs. Hybrid)")
-        m_cols = st.columns(5)
+        st.markdown("#### Full Method Comparison Matrix (Classical vs. Deep vs. Hybrid vs. Target)")
+        m_cols = st.columns(6)
         for idx, m_key in enumerate(["nearest", "guided", "jbf", "deep", "hybrid"]):
             r_info = next(r for r in metrics_rows if r["Key"] == m_key)
             m_cols[idx].image(
-                colorize_depth(preds[m_key], vmin, vmax),
+                colorize_depth(preds[m_key], vmin, vmax, cmap_name=cmap_choice),
                 caption=f"{METHOD_LABELS[m_key]}\nRMSE: {r_info['RMSE']:.4f}m | Edge-F1: {r_info['Edge_F1']:.3f}",
                 use_container_width=True,
             )
+        m_cols[5].image(
+            colorize_depth(gt_np, vmin, vmax, cmap_name=cmap_choice),
+            caption="Ground Truth HR\n(Ideal Reference)",
+            use_container_width=True,
+        )
 
-        st.markdown("#### Internal Explainability: Learned Edge-Coherence Gate ($G_{edge}$) & Uncertainty Map")
+        st.markdown("#### Internal Explainability: Learned Edge-Coherence Gate ($G_{edge}$), Uncertainty, & Improvement Heatmap")
         e1, e2, e3 = st.columns(3)
         e1.image(
             colorize_depth(edge_gate_np, 0.0, 1.0, cmap_name="magma"),
-            caption="Learned Edge-Coherence Gate G_edge (Suppresses Texture-Copying on Flat Walls)",
+            caption="Learned Edge-Coherence Gate G_edge (Suppresses Texture-Copying)",
             use_container_width=True,
         )
         e2.image(
@@ -520,9 +543,13 @@ def main() -> None:
             caption="Predicted Aleatoric Uncertainty (Drives Stage-3 Bilateral Energy Fusion)",
             use_container_width=True,
         )
+        # Error difference map (Bicubic Error - Hybrid Error). Positive (blue) = Hybrid is better!
+        err_bic = np.abs(preds["bicubic"] - gt_np)
+        err_hyb = np.abs(preds["hybrid"] - gt_np)
+        gain_map = err_bic - err_hyb
         e3.image(
-            colorize_depth(gt_np, vmin, vmax),
-            caption="Ground Truth High-Resolution Depth",
+            colorize_depth(gain_map, -0.15, 0.40, cmap_name="coolwarm"),
+            caption="Error Gain Map (Red/Blue: Warm regions show where Hybrid eliminated Bicubic blur)",
             use_container_width=True,
         )
 
@@ -544,27 +571,37 @@ def main() -> None:
         )
         zc2.image(
             cv2.resize(
-                colorize_depth(preds["nearest"][y0:y1, x0:x1], vmin, vmax), (220, 220), interpolation=cv2.INTER_NEAREST
+                colorize_depth(preds["nearest"][y0:y1, x0:x1], vmin, vmax, cmap_name=cmap_choice),
+                (220, 220),
+                interpolation=cv2.INTER_NEAREST,
             ),
             caption="Nearest (Blocky Artifacts)",
             use_container_width=True,
         )
         zc3.image(
             cv2.resize(
-                colorize_depth(preds["bicubic"][y0:y1, x0:x1], vmin, vmax), (220, 220), interpolation=cv2.INTER_NEAREST
+                colorize_depth(preds["bicubic"][y0:y1, x0:x1], vmin, vmax, cmap_name=cmap_choice),
+                (220, 220),
+                interpolation=cv2.INTER_NEAREST,
             ),
             caption="Bicubic (Blurred Boundary)",
             use_container_width=True,
         )
         zc4.image(
             cv2.resize(
-                colorize_depth(preds["hybrid"][y0:y1, x0:x1], vmin, vmax), (220, 220), interpolation=cv2.INTER_NEAREST
+                colorize_depth(preds["hybrid"][y0:y1, x0:x1], vmin, vmax, cmap_name=cmap_choice),
+                (220, 220),
+                interpolation=cv2.INTER_NEAREST,
             ),
             caption="Hybrid (Sharp Discontinuity)",
             use_container_width=True,
         )
         zc5.image(
-            cv2.resize(colorize_depth(gt_np[y0:y1, x0:x1], vmin, vmax), (220, 220), interpolation=cv2.INTER_NEAREST),
+            cv2.resize(
+                colorize_depth(gt_np[y0:y1, x0:x1], vmin, vmax, cmap_name=cmap_choice),
+                (220, 220),
+                interpolation=cv2.INTER_NEAREST,
+            ),
             caption="Ground Truth Patch",
             use_container_width=True,
         )
