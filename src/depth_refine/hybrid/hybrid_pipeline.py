@@ -191,7 +191,7 @@ class HybridReconstructor:
         uncertainty = model_out.uncertainty
         edge_gate = model_out.edge_gate
 
-        # --- STAGE 3: Uncertainty-Guided Bilateral Energy & Sensor Back-Projection Refinement ---
+        # --- STAGE 3: Uncertainty-Guided Trilateral Energy & Multi-Stream Refinement ---
         pred_lr = F.adaptive_avg_pool2d(d_deep, depth_lr.shape[-2:])
         disc_lr = detect_edges_and_discontinuities(depth_filled_lr, rgb_lr)
         interior_valid_lr = mask_clean_lr * (1.0 - disc_lr.coherence_gate)
@@ -200,17 +200,30 @@ class HybridReconstructor:
         conf_weight = torch.clamp(1.0 / (1.0 + uncertainty * 2.0), min=0.15, max=0.65)
         d_anchored = d_deep + 0.35 * conf_weight * (1.0 - edge_gate) * residual_hr
 
-        # Fine sub-pixel trilateral boundary polish
-        d_polished = joint_bilateral_filter(
+        # 1. Planar Stream: Texture-suppressed guided filter minimizes RMSE & prevents wallpaper bleed
+        d_planar = guided_filter(
+            d_anchored, rgb_hr, radius=max(3, scale), eps=1e-4, texture_suppression=True
+        )
+
+        # 2. Boundary Stream: Fine sub-pixel Joint Bilateral filter preserves sharp step discontinuities
+        k_size = min(9, 2 * scale + 1)
+        if k_size % 2 == 0:
+            k_size += 1
+        d_boundary = joint_bilateral_filter(
             d_anchored,
             rgb_hr,
-            kernel_size=5,
-            sigma_spatial=1.6,
-            sigma_color=0.028,
-            sigma_depth=0.15,
+            kernel_size=k_size,
+            sigma_spatial=float(scale) * 0.85,
+            sigma_color=0.032,
+            sigma_depth=0.18,
             iterations=1,
         )
 
+        # 3. Dynamic Edge-Coherence Fusion (preserves sharp object boundaries without planar ringing)
+        d_fused = (1.0 - edge_gate) * d_planar + edge_gate * d_boundary
+
+        # 4. Final Sub-Pixel Polish (removes flying pixels along occlusion edges)
+        d_polished = guided_filter(d_fused, rgb_hr, radius=2, eps=1e-5, texture_suppression=True)
         d_hybrid = torch.clamp(d_polished, min=0.05)
 
         if squeeze:

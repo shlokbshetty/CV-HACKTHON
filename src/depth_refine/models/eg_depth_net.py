@@ -23,6 +23,7 @@ import torch.nn.functional as F
 from depth_refine.classical.filters import (
     compute_spatial_gradients,
     detect_edges_and_discontinuities,
+    guided_filter,
     joint_bilateral_filter,
 )
 from depth_refine.classical.hole_filling import fill_depth_holes
@@ -300,26 +301,21 @@ class EGDepthNet(nn.Module):
         d_bicubic = interpolate_depth(depth_lr_filled, target_size=(H, W), mode="bicubic")
         d_nearest = interpolate_depth(depth_lr_filled, target_size=(H, W), mode="nearest")
 
-        # RGB-Guided Bilateral Upsampled Basis (snaps edges to exact RGB color transitions)
-        k_size = min(11, 2 * scale + 3)
-        if k_size % 2 == 0:
-            k_size += 1
-        d_jbu = joint_bilateral_filter(
+        # Fast, Edge-Preserving Guided Filter Basis (O(N) box-filter, prevents texture-copying)
+        d_guided = guided_filter(
             d_bicubic,
             rgb_hr,
-            kernel_size=k_size,
-            sigma_spatial=float(scale) * 0.9,
-            sigma_color=0.036,
-            sigma_depth=0.20,
-            iterations=2,
+            radius=max(3, scale),
+            eps=1e-4,
+            texture_suppression=True,
         )
 
         # Analyze physical depth discontinuities vs RGB texture
-        disc_info = detect_edges_and_discontinuities(d_jbu, rgb_hr)
+        disc_info = detect_edges_and_discontinuities(d_guided, rgb_hr)
         coherence_prior = disc_info.coherence_gate
 
-        # Anchor residual learning directly on the edge-preserving JBU basis
-        d_anchor = d_jbu
+        # Anchor residual learning directly on the edge-preserving guided basis
+        d_anchor = d_guided
         d_gx, d_gy, d_mag = compute_spatial_gradients(d_anchor)
 
         # Luminance gradients for RGB stream
