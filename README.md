@@ -73,6 +73,28 @@ uv run streamlit run app.py
 
 ---
 
+## Benchmark Results (Quantitative Highlights)
+
+Evaluated across **Middlebury (2001–2021)**, **NYU Depth V2**, and **KITTI** on an **NVIDIA GeForce RTX 5060 Laptop GPU**:
+
+| Dataset | Scale | Method | RMSE (m) ↓ | Boundary RMSE (m) ↓ | PSNR (dB) ↑ | SSIM ↑ | Edge F1 ↑ | Latency (ms) ↓ |
+| :--- | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **NYU Depth V2** | 2× | Bicubic Baseline | 1.0417 | 1.1705 | 17.64 | 0.8047 | 0.3921 | 3.4 ms |
+| | 2× | **Hybrid (Ours)** | **1.0067** *(−3.5 cm)* | **1.1273** *(−4.3 cm)* | **18.11** | **0.8152** | **0.3971** | 38.6 ms |
+| | 4× | Bicubic Baseline | 0.7443 | 0.9999 | 21.11 | 0.8525 | 0.3184 | 2.8 ms |
+| | 4× | **Hybrid (Ours)** | **0.7282** *(−1.6 cm)* | **0.9743** *(−2.6 cm)* | **21.34** | **0.8650** | **0.3613** | 39.7 ms |
+| **Middlebury** | 4× | Bicubic Baseline | 0.4112 | 0.8666 | 23.42 | 0.9092 | 0.3797 | 2.9 ms |
+| | 4× | **Hybrid (Ours)** | **0.4020** *(−0.9 cm)* | **0.8530** *(−1.4 cm)* | **23.63** | **0.9176** | **0.4676** | 39.9 ms |
+| **KITTI LiDAR** | 2× | Bicubic Baseline | 0.9799 | 0.7805 | 10.68 | 0.7143 | 0.2284 | 4.1 ms |
+| | 2× | **Hybrid (Ours)** | **0.9228** *(−5.7 cm)* | **0.7355** *(−4.5 cm)* | **11.21** | **0.7360** | **0.2485** | 42.3 ms |
+| | 4× | Bicubic Baseline | 1.0263 | 0.8738 | 10.29 | 0.7286 | 0.2006 | 2.8 ms |
+| | 4× | **Hybrid (Ours)** | **1.0114** *(−1.5 cm)* | **0.8499** *(−2.4 cm)* | **10.42** | **0.7550** | **0.2403** | 39.2 ms |
+
+Full multi-dataset report: [outputs/benchmark_report.md](outputs/benchmark_report.md)  
+Comprehensive Technical Hackathon Defense: [`hackathon_technical_report.md`](file:///C:/Users/siddh/.gemini/antigravity/brain/a1f5090e-c099-4ddf-875c-7b35d12ba2ba/hackathon_technical_report.md)
+
+---
+
 ## Codebase Structure (`codebase-design` Deep Modules)
 
 ```text
