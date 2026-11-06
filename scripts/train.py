@@ -325,6 +325,8 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train EG-DepthNet on RTX 5060 / RTX 4050.")
     parser.add_argument("--config", type=str, default="configs/rtx5060_nyuv2.yaml", help="Path to YAML config")
+    parser.add_argument("--epochs", type=int, default=None, help="Override number of training epochs")
+    parser.add_argument("--batch-size", type=int, default=None, help="Override training batch size")
     parser.add_argument(
         "--quick-pretrain",
         action="store_true",
@@ -337,6 +339,16 @@ def main() -> None:
         config = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     else:
         config = {}
+
+    if args.epochs is not None:
+        if "training" not in config:
+            config["training"] = {}
+        config["training"]["epochs"] = args.epochs
+
+    if args.batch_size is not None:
+        if "training" not in config:
+            config["training"] = {}
+        config["training"]["batch_size"] = args.batch_size
 
     train(config, quick_pretrain=args.quick_pretrain)
 

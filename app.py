@@ -119,6 +119,21 @@ def build_3d_point_cloud_figure(
     return fig
 
 
+def generate_camera_depth_prior(rgb_np: np.ndarray) -> np.ndarray:
+    """
+    Generate a realistic geometric depth prior for a standalone RGB camera photo.
+    Combines vertical perspective ground slope with luminance & edge cues.
+    Range: [0.6m, 5.0m] (standard indoor/room scale).
+    """
+    H, W = rgb_np.shape[:2]
+    y_coords, _ = np.mgrid[0:H, 0:W]
+    y_norm = y_coords / float(max(H, 1))
+    depth_base = 3.8 - 2.4 * y_norm
+    gray = cv2.cvtColor((rgb_np * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+    depth_prior = depth_base + 0.4 * (1.0 - gray)
+    return np.clip(depth_prior, 0.6, 6.0).astype(np.float32)
+
+
 def main() -> None:
     st.title("📐 Edge-Preserving Depth Map Upsampling & Refinement (ProbID - P4)")
     st.markdown(
@@ -149,6 +164,13 @@ def main() -> None:
     structured_holes = st.sidebar.checkbox("Structured Boundary Infrared Shadows", value=True)
     noise_std = st.sidebar.slider("Sensor Axial Noise (m)", 0.0, 0.06, 0.015, 0.005)
     outlier_prob = st.sidebar.slider("Outlier Spike Probability", 0.0, 0.03, 0.005, 0.005)
+    kinect_hardware_holes = False
+    if dataset_choice == "nyuv2":
+        kinect_hardware_holes = st.sidebar.checkbox(
+            "Hardware Kinect Absorption Shadows (Stress Test)",
+            value=False,
+            help="When checked, includes raw 2011 Kinect v1 hardware absorption blackouts in addition to multi-scale decimation.",
+        )
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("⚡ Quantization & Acceleration")
@@ -180,40 +202,172 @@ def main() -> None:
     )
 
     if dataset_choice == "custom_upload":
-        rgb_file = st.sidebar.file_uploader("Upload High-Res RGB Guidance (.png/.jpg)", type=["png", "jpg", "jpeg"])
-        depth_file = st.sidebar.file_uploader("Upload Depth Map (.png/.npy)", type=["png", "npy"])
-        if rgb_file is not None and depth_file is not None:
-            file_bytes = np.asarray(bytearray(rgb_file.read()), dtype=np.uint8)
-            bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-            rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-            H, W, _ = rgb_np.shape
-            H, W = (H // 8) * 8, (W // 8) * 8
-            rgb_np = rgb_np[:H, :W]
-            if depth_file.name.endswith(".npy"):
-                depth_np = np.load(depth_file).astype(np.float32)[:H, :W]
+        st.markdown("### 📸 Custom Camera & RGB-D Testing Studio")
+        st.markdown(
+            "Test the trained **EG-DepthNet + Hybrid Reconstructor** on your own camera photos, phone captures, or custom RGB-D datasets."
+        )
+
+        upload_mode = st.radio(
+            "Select Input Source Mode",
+            options=["photo_only", "paired_rgbd", "preset_samples"],
+            format_func=lambda x: {
+                "photo_only": "📷 Phone / Camera Photo (RGB Only — Instant Depth Prior & Upsampling)",
+                "paired_rgbd": "🛰️ Paired RGB + Depth Map (.png, .npy, 16-bit millimeter depth)",
+                "preset_samples": "🖼️ Try Built-in Real-World Camera Presets",
+            }[x],
+            horizontal=True,
+        )
+
+        target_res = st.selectbox(
+            "Target Processing Resolution",
+            options=[256, 384, 512],
+            index=0,
+            format_func=lambda x: f"{x} × {x} pixels ({'Fast' if x==256 else 'Balanced' if x==384 else 'High-Definition'})",
+        )
+
+        rgb_np = None
+        depth_np = None
+        sample_name = "custom_camera"
+
+        PRESET_MAP = {
+            "Art Studio (Sculpture & Easel)": Path("data/middlebury/2005_Art"),
+            "Office Desk (Books & Complex Shapes)": Path("data/middlebury/2005_Books"),
+            "Living Room Dolls (Fine Foreground Details)": Path("data/middlebury/2005_Dolls"),
+            "Indoor Laundry (Cloth Folds & Occlusions)": Path("data/middlebury/2005_Laundry"),
+            "Botanical Aloe (Thin Object Edges)": Path("data/middlebury/2006_Aloe"),
+        }
+
+        if upload_mode == "preset_samples":
+            preset_choice = st.selectbox("Choose a Built-in Real Camera Scene", options=list(PRESET_MAP.keys()))
+            p_dir = PRESET_MAP[preset_choice]
+            rgb_path = next(p_dir.glob("view*.png"), None) or next(p_dir.glob("im*.png"), None)
+            disp_path = next(p_dir.glob("disp*.png"), None) or next(p_dir.glob("disp*.pfm"), None)
+            if rgb_path and rgb_path.exists():
+                bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
+                rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            if disp_path and disp_path.exists():
+                gray = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
+                if gray is not None:
+                    if gray.ndim == 3:
+                        gray = gray[:, :, 0]
+                    disp_valid = np.nan_to_num(gray.astype(np.float32), nan=0.0)
+                    depth_np = 100.0 / np.maximum(disp_valid, 5.0)
+                    depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
+            sample_name = p_dir.name
+
+        elif upload_mode == "photo_only":
+            st.info("💡 **Camera Photo Testing**: Upload any photo from your phone or camera. A geometric depth prior will be synthesized and degraded at your selected factor (2×, 4×, 8×) to demonstrate how EG-DepthNet sharpens boundaries!")
+            up_col1, up_col2 = st.columns([2, 1])
+            with up_col1:
+                rgb_file = st.file_uploader(
+                    "Upload Camera Photo (.jpg, .png, .jpeg, .webp)",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    key="camera_photo_uploader",
+                )
+            with up_col2:
+                st.markdown("**Or Test with Sample Photos:**")
+                if st.button("🛋️ Living Room Statue"):
+                    st.session_state["camera_preset"] = "Art Studio (Sculpture & Easel)"
+                if st.button("📚 Office Desk"):
+                    st.session_state["camera_preset"] = "Office Desk (Books & Complex Shapes)"
+                if st.button("🌿 Botanical Plant"):
+                    st.session_state["camera_preset"] = "Botanical Aloe (Thin Object Edges)"
+
+            if rgb_file is not None:
+                file_bytes = np.asarray(bytearray(rgb_file.read()), dtype=np.uint8)
+                bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                if bgr is not None:
+                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                    sample_name = Path(rgb_file.name).stem
+            elif "camera_preset" in st.session_state:
+                p_dir = PRESET_MAP[st.session_state["camera_preset"]]
+                rgb_path = next(p_dir.glob("view*.png"), None)
+                if rgb_path and rgb_path.exists():
+                    bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
+                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                    sample_name = p_dir.name
             else:
-                d_bytes = np.asarray(bytearray(depth_file.read()), dtype=np.uint8)
-                d_raw = cv2.imdecode(d_bytes, cv2.IMREAD_UNCHANGED)
-                if d_raw.ndim == 3:
-                    d_raw = d_raw[:, :, 0]
-                d_raw = cv2.resize(d_raw.astype(np.float32), (W, H), interpolation=cv2.INTER_NEAREST)
-                depth_np = 1.0 + 5.0 * (d_raw - d_raw.min()) / max(float(d_raw.max() - d_raw.min()), 1e-5)
-            rgb_t = torch.from_numpy(rgb_np.transpose(2, 0, 1)).float()
-            depth_t = torch.from_numpy(depth_np[None, ...]).float()
-            degraded = degrade_depth(depth_t, rgb_t, deg_cfg)
-            sample = {
-                "name": "custom_upload",
-                "scale": scale,
-                "depth_lr": degraded.depth_lr,
-                "valid_mask_lr": degraded.valid_mask_lr,
-                "rgb_hr": degraded.rgb_hr,
-                "depth_gt": degraded.depth_gt,
-                "valid_mask_gt": degraded.valid_mask_gt,
-                "boundary_mask_gt": degraded.boundary_mask_gt,
-            }
-        else:
-            st.info("Upload both an RGB image and a Depth map in the sidebar, or choose a preset dataset.")
+                p_dir = PRESET_MAP["Art Studio (Sculpture & Easel)"]
+                rgb_path = next(p_dir.glob("view*.png"), None)
+                if rgb_path and rgb_path.exists():
+                    bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
+                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                    sample_name = "camera_demo_art"
+
+        elif upload_mode == "paired_rgbd":
+            st.info("💡 **Paired RGB-D Testing**: Upload both an RGB guidance image and its corresponding depth map (supports 8-bit, 16-bit millimeter PNG, or .npy).")
+            p_col1, p_col2 = st.columns(2)
+            with p_col1:
+                rgb_file = st.file_uploader("Upload High-Res RGB Image (.png, .jpg)", type=["png", "jpg", "jpeg", "webp"], key="paired_rgb")
+            with p_col2:
+                depth_file = st.file_uploader("Upload Aligned Depth Map (.png, .npy)", type=["png", "npy"], key="paired_depth")
+
+            if rgb_file is not None:
+                file_bytes = np.asarray(bytearray(rgb_file.read()), dtype=np.uint8)
+                bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                if bgr is not None:
+                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                    sample_name = Path(rgb_file.name).stem
+
+            if depth_file is not None:
+                if depth_file.name.endswith(".npy"):
+                    depth_np = np.load(depth_file).astype(np.float32)
+                else:
+                    d_bytes = np.asarray(bytearray(depth_file.read()), dtype=np.uint8)
+                    d_raw = cv2.imdecode(d_bytes, cv2.IMREAD_UNCHANGED)
+                    if d_raw is not None:
+                        if d_raw.ndim == 3:
+                            d_raw = d_raw[:, :, 0]
+                        d_raw_f = d_raw.astype(np.float32)
+                        if d_raw_f.max() > 20.0:  # 16-bit millimeter depth
+                            depth_np = np.clip(d_raw_f / 1000.0, 0.2, 10.0)
+                        else:  # 8-bit grayscale normalized
+                            depth_np = 0.8 + 4.2 * (d_raw_f - d_raw_f.min()) / max(float(d_raw_f.max() - d_raw_f.min()), 1e-5)
+
+            if rgb_np is None or depth_np is None:
+                st.warning("Please upload both an RGB image and a Depth map to run paired evaluation. Or click below to load a sample:")
+                if st.button("🖼️ Load Demo Paired Scene (Office Desk)"):
+                    p_dir = PRESET_MAP["Office Desk (Books & Complex Shapes)"]
+                    bgr = cv2.imread(str(next(p_dir.glob("view*.png"))), cv2.IMREAD_COLOR)
+                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                    gray = cv2.imread(str(next(p_dir.glob("disp*.png"))), cv2.IMREAD_GRAYSCALE).astype(np.float32)
+                    depth_np = np.clip(100.0 / np.maximum(gray, 5.0), 0.5, 6.0)
+                    sample_name = "demo_office_desk"
+
+        if rgb_np is None:
+            st.error("No image available. Please upload an RGB photo.")
             return
+
+        # Resize / Center-crop cleanly to (target_res, target_res)
+        h_orig, w_orig = rgb_np.shape[:2]
+        crop_dim = min(h_orig, w_orig)
+        cy, cx = h_orig // 2, w_orig // 2
+        rgb_cropped = rgb_np[cy - crop_dim // 2 : cy + crop_dim // 2, cx - crop_dim // 2 : cx + crop_dim // 2]
+        rgb_res = cv2.resize(rgb_cropped, (target_res, target_res))
+
+        if depth_np is not None:
+            dh_orig, dw_orig = depth_np.shape[:2]
+            d_dim = min(dh_orig, dw_orig)
+            dcy, dcx = dh_orig // 2, dw_orig // 2
+            d_cropped = depth_np[dcy - d_dim // 2 : dcy + d_dim // 2, dcx - d_dim // 2 : dcx + d_dim // 2]
+            depth_res = cv2.resize(d_cropped, (target_res, target_res), interpolation=cv2.INTER_NEAREST)
+        else:
+            depth_res = generate_camera_depth_prior(rgb_res)
+
+        rgb_t = torch.from_numpy(rgb_res.transpose(2, 0, 1)).float()
+        depth_t = torch.from_numpy(depth_res[None, ...]).float()
+        degraded = degrade_depth(depth_t, rgb_t, deg_cfg)
+
+        sample = {
+            "name": sample_name,
+            "scale": scale,
+            "depth_lr": degraded.depth_lr,
+            "valid_mask_lr": degraded.valid_mask_lr,
+            "rgb_hr": degraded.rgb_hr,
+            "depth_gt": degraded.depth_gt,
+            "valid_mask_gt": degraded.valid_mask_gt,
+            "boundary_mask_gt": degraded.boundary_mask_gt,
+        }
     else:
         ds = load_dataset(
             name=dataset_choice,  # type: ignore[arg-type]
@@ -222,6 +376,7 @@ def main() -> None:
             crop_size=256,
             max_samples=16,
             fallback_to_synthetic=True,
+            use_raw_sensor_holes=kinect_hardware_holes,
         )
         scene_idx = st.sidebar.number_input("Scene Index", min_value=0, max_value=max(0, len(ds) - 1), value=0)
         sample = ds[int(scene_idx)]
@@ -531,6 +686,30 @@ def main() -> None:
                 row.update(item["metrics"])
                 flat_rows.append(row)
             st.dataframe(pd.DataFrame(flat_rows), use_container_width=True)
+
+    # --- Export Reconstructed Depth Map ---
+    st.markdown("---")
+    st.markdown("### 💾 Export Reconstructed Depth Map")
+    exp_col1, exp_col2 = st.columns(2)
+    depth_mm = (preds["hybrid"] * 1000.0).clip(0, 65535).astype(np.uint16)
+    _, png_buf = cv2.imencode(".png", depth_mm)
+    exp_col1.download_button(
+        "📥 Download High-Res Depth (16-bit PNG, Millimeters)",
+        data=png_buf.tobytes(),
+        file_name=f"{sample['name']}_hybrid_depth_16bit.png",
+        mime="image/png",
+        use_container_width=True,
+    )
+    import io
+    npy_buf = io.BytesIO()
+    np.save(npy_buf, preds["hybrid"].astype(np.float32))
+    exp_col2.download_button(
+        "📥 Download Depth Map as Numpy Array (.npy)",
+        data=npy_buf.getvalue(),
+        file_name=f"{sample['name']}_hybrid_depth.npy",
+        mime="application/octet-stream",
+        use_container_width=True,
+    )
 
 
 if __name__ == "__main__":

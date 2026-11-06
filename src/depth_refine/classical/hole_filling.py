@@ -16,6 +16,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from depth_refine.classical.interpolation import _pyramid_fill_holes_lr
+
 
 def remove_depth_outliers(
     depth: torch.Tensor,
@@ -59,8 +61,9 @@ def remove_depth_outliers(
     close_neighbors = ((diff < jump_threshold) & (patches_m > 0.5)).sum(dim=1, keepdim=True)
     total_valid_neighbors = (patches_m > 0.5).sum(dim=1, keepdim=True)
 
-    # If a valid pixel has >=4 valid neighbors in 3x3 window, and ONLY itself (<=1) agrees with its depth, it's an isolated spike!
-    is_spike = (valid_mask > 0.5) & (total_valid_neighbors >= 5) & (close_neighbors <= 2)
+    # Adaptive neighbor quorum: flags isolated spikes even in sparse / hole-adjacent regions
+    min_required = torch.clamp((total_valid_neighbors * 0.4).long(), min=2, max=4)
+    is_spike = (valid_mask > 0.5) & (total_valid_neighbors >= 3) & (close_neighbors < min_required)
 
     # Replace spike with mean of valid non-center neighbors
     neighbor_mask = patches_m.clone()
@@ -130,26 +133,11 @@ def fill_depth_holes(
     if method == "multiscale_bilateral":
         # Multi-scale Pyramid + RGB-Guided Cross-Bilateral Propagation (NYUv2 `fill_depth_cross_bf` equivalent)
         B, _, H, W = depth_clean.shape
-        d_cur = depth_clean * mask_clean
-        m_cur = mask_clean.clone()
 
-        # Coarse-to-fine pyramid propagation to bridge arbitrarily wide holes
-        scales = [8, 4, 2, 1]
-        for s in scales:
-            if s > 1 and H >= s * 4 and W >= s * 4:
-                hs, ws = H // s, W // s
-                num_s = F.adaptive_avg_pool2d(d_cur * m_cur, (hs, ws))
-                den_s = F.adaptive_avg_pool2d(m_cur, (hs, ws))
-                val_s = torch.where(den_s > 1e-4, num_s / torch.clamp(den_s, min=1e-5), torch.zeros_like(num_s))
-                up_val = F.interpolate(val_s, size=(H, W), mode="bilinear", align_corners=False)
-                up_mask = (F.interpolate(den_s, size=(H, W), mode="bilinear", align_corners=False) > 1e-3).to(
-                    depth.dtype
-                )
-                fill_here = (m_cur <= 0.5) & (up_mask > 0.5)
-                d_cur = torch.where(fill_here, up_val, d_cur)
-                m_cur = torch.where(fill_here, torch.ones_like(m_cur) * 0.5, m_cur)
+        # Step 1: High-precision fine-to-coarse pyramid inpainting with harmonic boundary diffusion
+        d_cur = _pyramid_fill_holes_lr(depth_clean, mask_clean)
 
-        # Refine filled hole pixels using iterative RGB-guided cross-bilateral propagation
+        # Step 2: Refine filled hole pixels using iterative RGB-guided cross-bilateral propagation
         # so holes adjacent to object boundaries fill strictly from the same-color side of the edge
         if rgb is not None:
             rgb_resized = (
@@ -160,7 +148,7 @@ def fill_depth_holes(
             pad_rgb = F.pad(rgb_resized, (2, 2, 2, 2), mode="replicate")
             patches_rgb = F.unfold(pad_rgb, kernel_size=5).view(B, 3, 25, H, W)
             color_diff2 = ((patches_rgb - rgb_resized.unsqueeze(2)) ** 2).sum(dim=1)
-            w_color = torch.exp(-color_diff2 / (2.0 * (0.045**2)))
+            w_color = torch.exp(-color_diff2 / (2.0 * (0.075**2)))
 
             # Anchor valid sensor readings with 3x higher confidence than pyramid-interpolated hole estimates
             conf_map = torch.where(mask_clean > 0.5, torch.ones_like(mask_clean) * 3.0, torch.ones_like(mask_clean) * 0.4)

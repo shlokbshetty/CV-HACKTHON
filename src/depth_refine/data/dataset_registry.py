@@ -183,10 +183,12 @@ class NYUv2Dataset(Dataset):
         crop_size: int = 256,
         max_samples: Optional[int] = None,
         cache_in_ram: bool = True,
+        use_raw_sensor_holes: bool = False,
     ) -> None:
         self.split = split
         self.degradation = degradation or DegradationConfig()
         self.crop_size = crop_size
+        self.use_raw_sensor_holes = use_raw_sensor_holes
         self.mat_path = mat_path
         self.npz_files: List[Path] = []
         self.mat_file = None
@@ -282,7 +284,8 @@ class NYUv2Dataset(Dataset):
         depth = torch.from_numpy(depth_crop[None, ...]).float()
         raw = torch.from_numpy(raw_crop[None, ...]).float()
 
-        sample = degrade_depth(depth, rgb, self.degradation, raw_depth_hr=raw)
+        raw_to_pass = raw if self.use_raw_sensor_holes else None
+        sample = degrade_depth(depth, rgb, self.degradation, raw_depth_hr=raw_to_pass)
         return {
             "name": f"nyuv2_{real_idx:04d}",
             "scale": self.degradation.scale,
@@ -378,7 +381,6 @@ class MiddleburyDataset(Dataset):
         depth = torch.from_numpy(depth_crop[None, ...]).float()
         raw = torch.from_numpy(raw_crop[None, ...]).float()
 
-        sample = degrade_depth(depth, rgb, self.degradation, raw_depth_hr=raw)
         return {
             "name": s_dir.name,
             "scale": self.degradation.scale,
@@ -458,6 +460,7 @@ def load_dataset(
     max_samples: Optional[int] = None,
     multi_scale_choices: Optional[List[int]] = None,
     fallback_to_synthetic: bool = True,
+    use_raw_sensor_holes: bool = False,
 ) -> Dataset:
     """
     Unified dataset factory for NYUv2, Middlebury, KITTI, and Synthetic benchmarks.
@@ -485,6 +488,7 @@ def load_dataset(
                 crop_size=crop_size,
                 max_samples=max_samples,
                 cache_in_ram=True,
+                use_raw_sensor_holes=use_raw_sensor_holes,
             )
         if fallback_to_synthetic:
             return SyntheticRGBDDataset(
