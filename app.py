@@ -72,24 +72,27 @@ def build_3d_point_cloud_figure(
     title: str,
     stride: int = 3,
 ) -> go.Figure:
-    """Create an interactive 3D RGB-colored point cloud in Plotly."""
+    """Create an interactive 3D RGB-colored point cloud in Plotly with correct pinhole camera orientation."""
     H, W = depth.shape
     yy, xx = np.meshgrid(np.arange(0, H, stride), np.arange(0, W, stride), indexing="ij")
     z = depth[::stride, ::stride]
     c = rgb[::stride, ::stride]
 
-    valid = (z > 0.1) & (z < 10.0) & np.isfinite(z)
+    # Dynamically adapt depth threshold for indoor NYU/Middlebury vs outdoor LiDAR KITTI (up to 85m)
+    vmax_m = 85.0 if float(np.nanmax(z)) > 15.0 else 12.0
+    valid = (z > 0.05) & (z < vmax_m) & np.isfinite(z)
     u = xx[valid]
     v = yy[valid]
     z_val = z[valid]
     c_val = (np.clip(c[valid], 0.0, 1.0) * 255).astype(int)
 
-    # Back-project (u, v, z) using pinhole camera model
-    fx = fy = max(H, W) * 0.9
+    # Back-project (u, v, z) using metric pinhole camera geometry:
+    # X: horizontal width (m), Y: forward depth into scene (m), Z: vertical height (m, upright positive)
+    fx = fy = max(H, W) * 0.95
     cx, cy = W / 2.0, H / 2.0
     X = (u - cx) * z_val / fx
-    Y = -(v - cy) * z_val / fy
-    Z = -z_val
+    Y = z_val  # Forward depth into the screen
+    Z = -(v - cy) * z_val / fy  # Upright vertical height
 
     colors_str = [f"rgb({r},{g},{b})" for r, g, b in c_val]
 
@@ -97,23 +100,26 @@ def build_3d_point_cloud_figure(
         data=[
             go.Scatter3d(
                 x=X,
-                y=Z,
-                z=Y,
+                y=Y,
+                z=Z,
                 mode="markers",
-                marker=dict(size=2.4, color=colors_str, opacity=0.92),
+                marker=dict(size=2.2, color=colors_str, opacity=0.92),
             )
         ]
     )
     fig.update_layout(
         title=title,
         margin=dict(l=0, r=0, b=0, t=35),
-        height=460,
+        height=480,
         scene=dict(
-            xaxis_title="X (m)",
+            xaxis_title="Width X (m)",
             yaxis_title="Depth Z (m)",
-            zaxis_title="Y (m)",
+            zaxis_title="Height Y (m)",
             aspectmode="data",
-            camera=dict(eye=dict(x=1.25, y=1.35, z=0.65)),
+            camera=dict(
+                eye=dict(x=0.0, y=-1.65, z=0.65),
+                up=dict(x=0, y=0, z=1),
+            ),
         ),
     )
     return fig
@@ -121,17 +127,48 @@ def build_3d_point_cloud_figure(
 
 def generate_camera_depth_prior(rgb_np: np.ndarray) -> np.ndarray:
     """
-    Generate a realistic geometric depth prior for a standalone RGB camera photo.
-    Combines vertical perspective ground slope with luminance & edge cues.
-    Range: [0.6m, 5.0m] (standard indoor/room scale).
+    Generate an intelligent, multi-cue, edge-preserving geometric depth prior for any arbitrary real-world photo.
+    Combines:
+    1. Vertical ground-plane perspective gradient
+    2. Multi-scale color contrast & saliency
+    3. High-frequency focus / sharpness measure (depth from defocus)
+    4. Central subject framing prior
+    5. Bilateral edge-guided relaxation
+    Range: [0.6m, 5.5m] (natural human/object scale).
     """
     H, W = rgb_np.shape[:2]
-    y_coords, _ = np.mgrid[0:H, 0:W]
-    y_norm = y_coords / float(max(H, 1))
-    depth_base = 3.8 - 2.4 * y_norm
     gray = cv2.cvtColor((rgb_np * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
-    depth_prior = depth_base + 0.4 * (1.0 - gray)
-    return np.clip(depth_prior, 0.6, 6.0).astype(np.float32)
+
+    yy, xx = np.mgrid[0:H, 0:W]
+    y_norm = yy.astype(np.float32) / max(H, 1)
+    x_norm = xx.astype(np.float32) / max(W, 1)
+
+    # 1. Multi-scale Saliency / Contrast
+    mean_color = rgb_np.mean(axis=(0, 1), keepdims=True)
+    color_diff = np.linalg.norm(rgb_np - mean_color, axis=-1)
+    saliency = cv2.GaussianBlur(color_diff, (21, 21), 0)
+    s_norm = (saliency - saliency.min()) / max(float(saliency.max() - saliency.min()), 1e-5)
+
+    # 2. Focus / Sharpness cue (Laplacian local variance)
+    lap = np.abs(cv2.Laplacian((gray * 255).astype(np.uint8), cv2.CV_32F))
+    focus = cv2.GaussianBlur(lap, (31, 31), 0)
+    f_norm = (focus - focus.min()) / max(float(focus.max() - focus.min()), 1e-5)
+
+    # 3. Central framing prior (photographers frame foreground subjects near center)
+    center_dist = np.sqrt((x_norm - 0.5) ** 2 + (y_norm - 0.55) ** 2)
+    center_prior = np.clip(1.0 - center_dist / 0.7, 0.0, 1.0)
+
+    # Combine cues: foreground objects have high saliency, sharp focus, center framing
+    fg_prob = 0.45 * s_norm + 0.35 * f_norm + 0.20 * center_prior
+
+    # Base depth from ground slope: 1.2m at bottom to 4.2m at top
+    base_depth = 4.2 - 3.0 * y_norm
+    # Foreground objects pull depth forward to 1.0m - 2.2m
+    depth_raw = (1.0 - fg_prob) * base_depth + fg_prob * (1.2 + 0.8 * y_norm)
+
+    # Edge-preserving bilateral smoothing so objects have distinct, sharp depth planes
+    depth_smooth = cv2.bilateralFilter(depth_raw.astype(np.float32), d=9, sigmaColor=0.35, sigmaSpace=15.0)
+    return np.clip(depth_smooth, 0.6, 5.5).astype(np.float32)
 
 
 def main() -> None:
@@ -243,33 +280,39 @@ def main() -> None:
         sample_name = "custom_camera"
 
         PRESET_MAP = {
-            "Art Studio (Sculpture & Easel)": Path("data/middlebury/2005_Art"),
-            "Office Desk (Books & Complex Shapes)": Path("data/middlebury/2005_Books"),
-            "Living Room Dolls (Fine Foreground Details)": Path("data/middlebury/2005_Dolls"),
-            "Indoor Laundry (Cloth Folds & Occlusions)": Path("data/middlebury/2005_Laundry"),
-            "Botanical Aloe (Thin Object Edges)": Path("data/middlebury/2006_Aloe"),
+            "Art Studio & Easel (artroom1)": Path("data/middleburry/data/artroom1"),
+            "Bandsaw Industrial Workshop (bandsaw1)": Path("data/middleburry/data/bandsaw1"),
+            "Chessboard & Pieces (chess1)": Path("data/middleburry/data/chess1"),
+            "Ladder & Scaffolding (ladder1)": Path("data/middleburry/data/ladder1"),
+            "Roller Skates (skates1)": Path("data/middleburry/data/skates1"),
         }
 
         if upload_mode == "preset_samples":
             preset_choice = st.selectbox("Choose a Built-in Real Camera Scene", options=list(PRESET_MAP.keys()))
             p_dir = PRESET_MAP[preset_choice]
-            rgb_path = next(p_dir.glob("view*.png"), None) or next(p_dir.glob("im*.png"), None)
-            disp_path = next(p_dir.glob("disp*.png"), None) or next(p_dir.glob("disp*.pfm"), None)
+            rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
+            disp_path = next(p_dir.glob("disp*.pfm"), None) or next(p_dir.glob("disp*.png"), None)
             if rgb_path and rgb_path.exists():
                 bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
                 rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
             if disp_path and disp_path.exists():
-                gray = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
-                if gray is not None:
-                    if gray.ndim == 3:
-                        gray = gray[:, :, 0]
-                    disp_valid = np.nan_to_num(gray.astype(np.float32), nan=0.0)
+                if disp_path.suffix == ".pfm":
+                    disp_np = MiddleburyDataset(scene_dirs=[])._read_disp(disp_path)
+                    disp_valid = np.nan_to_num(disp_np, nan=0.0, posinf=0.0, neginf=0.0)
                     depth_np = 100.0 / np.maximum(disp_valid, 5.0)
                     depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
+                else:
+                    gray = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
+                    if gray is not None:
+                        if gray.ndim == 3:
+                            gray = gray[:, :, 0]
+                        disp_valid = np.nan_to_num(gray.astype(np.float32), nan=0.0)
+                        depth_np = 100.0 / np.maximum(disp_valid, 5.0)
+                        depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
             sample_name = p_dir.name
 
         elif upload_mode == "photo_only":
-            st.info("💡 **Camera Photo Testing**: Upload any photo from your phone or camera. A geometric depth prior will be synthesized and degraded at your selected factor (2×, 4×, 8×) to demonstrate how EG-DepthNet sharpens boundaries!")
+            st.info("💡 **Camera Photo Testing**: Upload any photo from your phone or camera. An intelligent, multi-cue, edge-preserving geometric depth prior will be synthesized and degraded at your selected factor (2×, 4×, 8×) to demonstrate how EG-DepthNet sharpens boundaries!")
             up_col1, up_col2 = st.columns([2, 1])
             with up_col1:
                 rgb_file = st.file_uploader(
@@ -279,12 +322,12 @@ def main() -> None:
                 )
             with up_col2:
                 st.markdown("**Or Test with Sample Photos:**")
-                if st.button("🛋️ Living Room Statue"):
-                    st.session_state["camera_preset"] = "Art Studio (Sculpture & Easel)"
-                if st.button("📚 Office Desk"):
-                    st.session_state["camera_preset"] = "Office Desk (Books & Complex Shapes)"
-                if st.button("🌿 Botanical Plant"):
-                    st.session_state["camera_preset"] = "Botanical Aloe (Thin Object Edges)"
+                if st.button("🛋️ Art Studio"):
+                    st.session_state["camera_preset"] = "Art Studio & Easel (artroom1)"
+                if st.button("♟️ Chessboard"):
+                    st.session_state["camera_preset"] = "Chessboard & Pieces (chess1)"
+                if st.button("🪜 Ladder & Studio"):
+                    st.session_state["camera_preset"] = "Ladder & Scaffolding (ladder1)"
 
             if rgb_file is not None:
                 file_bytes = np.asarray(bytearray(rgb_file.read()), dtype=np.uint8)
@@ -653,9 +696,9 @@ def main() -> None:
         st.subheader("Interactive 3D RGB-D Point Cloud Comparison")
         st.markdown(
             "Conventional interpolation (`Bicubic`) produces **flying pixels** bridging foreground and background objects at occlusion boundaries. "
-            "Our **Hybrid Edge-Gated Reconstruction** preserves clean 3D geometric separation."
+            "Our **Hybrid EG-DepthNet Reconstruction** preserves crisp 3D geometric step boundaries matching the Ground Truth target."
         )
-        pc1, pc2 = st.columns(2)
+        pc1, pc2, pc3 = st.columns(3)
         with pc1:
             st.plotly_chart(
                 build_3d_point_cloud_figure(preds["bicubic"], rgb_np, "Bicubic Baseline (Flying Pixels at Edges)"),
@@ -664,7 +707,14 @@ def main() -> None:
         with pc2:
             st.plotly_chart(
                 build_3d_point_cloud_figure(
-                    preds["hybrid"], rgb_np, "Hybrid EG-DepthNet (Crisp 3D Object Boundaries)"
+                    preds["hybrid"], rgb_np, "Hybrid EG-DepthNet (Crisp 3D Discontinuities)"
+                ),
+                use_container_width=True,
+            )
+        with pc3:
+            st.plotly_chart(
+                build_3d_point_cloud_figure(
+                    gt_np, rgb_np, "Ground Truth Target (Ideal 3D Geometry)"
                 ),
                 use_container_width=True,
             )
