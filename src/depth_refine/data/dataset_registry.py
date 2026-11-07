@@ -546,16 +546,20 @@ def load_dataset(
         has_npz = npz_dir.exists() and len(list(npz_dir.glob("*.npz"))) > 0
 
         if has_mat or has_npz:
-            return NYUv2Dataset(
-                mat_path=mat_path if has_mat else None,
-                npz_dir=npz_dir if has_npz else None,
-                split=split,
-                degradation=deg,
-                crop_size=crop_size,
-                max_samples=max_samples,
-                cache_in_ram=True,
-                use_raw_sensor_holes=use_raw_sensor_holes,
-            )
+            try:
+                return NYUv2Dataset(
+                    mat_path=mat_path if has_mat else None,
+                    npz_dir=npz_dir if has_npz else None,
+                    split=split,
+                    degradation=deg,
+                    crop_size=crop_size,
+                    max_samples=max_samples,
+                    cache_in_ram=True,
+                    use_raw_sensor_holes=use_raw_sensor_holes,
+                )
+            except (ImportError, Exception) as e:
+                import logging
+                logging.getLogger(__name__).warning("Failed to initialize NYUv2Dataset (%s); falling back", e)
         if fallback_to_synthetic:
             return SyntheticRGBDDataset(
                 num_samples=max_samples or (64 if split == "train" else 16),
