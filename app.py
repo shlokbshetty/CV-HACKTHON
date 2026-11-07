@@ -71,6 +71,7 @@ def build_3d_point_cloud_figure(
     rgb: np.ndarray,
     title: str,
     valid_mask: np.ndarray | None = None,
+    edge_gate: np.ndarray | None = None,
     stride: int = 2,
     point_size: float = 2.8,
     dataset_name: str = "nyuv2",
@@ -133,8 +134,13 @@ def build_3d_point_cloud_figure(
         gx = np.abs(np.gradient(depth, axis=1))[::stride, ::stride][valid]
         gy = np.abs(np.gradient(depth, axis=0))[::stride, ::stride][valid]
         grad_mag = np.sqrt(gx**2 + gy**2)
-        thresh = float(np.percentile(grad_mag, 92)) if grad_mag.size > 0 else 1.0
-        keep = grad_mag < thresh
+        if edge_gate is not None:
+            eg_sub = edge_gate[::stride, ::stride][valid]
+            p80 = float(np.percentile(grad_mag, 80)) if grad_mag.size > 0 else 0.5
+            keep = ~((eg_sub > 0.40) & (grad_mag > p80))
+        else:
+            thresh = float(np.percentile(grad_mag, 92)) if grad_mag.size > 0 else 1.0
+            keep = grad_mag < thresh
         X, Y, Z = X[keep], Y[keep], Z[keep]
         c_sub = c_sub[keep]
         z_val = z_val[keep]
@@ -151,11 +157,17 @@ def build_3d_point_cloud_figure(
         mapped_rgba = (cmap(norm_z)[:, :3] * 255).astype(int)
         colors_str = [f"rgb({r},{g},{b})" for r, g, b in mapped_rgba]
     elif color_mode == "discontinuity":
-        gx = np.abs(np.gradient(depth, axis=1))[::stride, ::stride][valid]
-        gy = np.abs(np.gradient(depth, axis=0))[::stride, ::stride][valid]
-        grad_mag = np.sqrt(gx**2 + gy**2)
-        thresh = float(np.percentile(grad_mag, 85)) if grad_mag.size > 0 else 0.2
-        is_flying = grad_mag > thresh
+        if edge_gate is not None:
+            eg_sub = edge_gate[::stride, ::stride][valid]
+            if len(eg_sub) > len(z_val):
+                eg_sub = eg_sub[valid_subset]
+            is_flying = eg_sub > 0.45
+        else:
+            gx = np.abs(np.gradient(depth, axis=1))[::stride, ::stride][valid]
+            gy = np.abs(np.gradient(depth, axis=0))[::stride, ::stride][valid]
+            grad_mag = np.sqrt(gx**2 + gy**2)
+            thresh = float(np.percentile(grad_mag, 85)) if grad_mag.size > 0 else 0.2
+            is_flying = grad_mag > thresh
         colors_str = []
         c_base = (np.clip(c_sub, 0.0, 1.0) * 255).astype(int)
         for i, (r, g, b) in enumerate(c_base):
@@ -850,6 +862,7 @@ def main() -> None:
                         rgb_np,
                         "Hybrid EG-DepthNet (Crisp 3D Discontinuities)",
                         valid_mask=mask_to_use,
+                        edge_gate=edge_gate_np,
                         stride=stride_choice,
                         point_size=pt_size,
                         dataset_name=dataset_choice,
@@ -866,6 +879,7 @@ def main() -> None:
                         rgb_np,
                         "Ground Truth Target (Ideal 3D Geometry)",
                         valid_mask=mask_to_use,
+                        edge_gate=edge_gate_np,
                         stride=stride_choice,
                         point_size=pt_size,
                         dataset_name=dataset_choice,
@@ -893,6 +907,7 @@ def main() -> None:
                     rgb_np,
                     hero_title,
                     valid_mask=mask_to_use,
+                    edge_gate=edge_gate_np,
                     stride=stride_choice,
                     point_size=pt_size,
                     dataset_name=dataset_choice,
