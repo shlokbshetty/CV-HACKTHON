@@ -70,31 +70,88 @@ def build_3d_point_cloud_figure(
     depth: np.ndarray,
     rgb: np.ndarray,
     title: str,
-    stride: int = 3,
+    valid_mask: np.ndarray | None = None,
+    stride: int = 2,
+    point_size: float = 2.8,
+    dataset_name: str = "nyuv2",
+    color_mode: str = "rgb",
+    depth_clip_max: float | None = None,
+    height: int = 500,
 ) -> go.Figure:
-    """Create an interactive 3D RGB-colored point cloud in Plotly with correct pinhole camera orientation."""
+    """Create an interactive 3D RGB-colored point cloud in Plotly with metric pinhole camera geometry."""
     H, W = depth.shape
     yy, xx = np.meshgrid(np.arange(0, H, stride), np.arange(0, W, stride), indexing="ij")
     z = depth[::stride, ::stride]
     c = rgb[::stride, ::stride]
 
-    # Dynamically adapt depth threshold for indoor NYU/Middlebury vs outdoor LiDAR KITTI (up to 85m)
-    vmax_m = 85.0 if float(np.nanmax(z)) > 15.0 else 12.0
-    valid = (z > 0.05) & (z < vmax_m) & np.isfinite(z)
+    # Sensor validity & outlier clipping
+    valid = (z > 0.05) & np.isfinite(z)
+    if valid_mask is not None:
+        v_sub = valid_mask[::stride, ::stride]
+        valid = valid & v_sub
+
+    if depth_clip_max is not None and depth_clip_max > 0.1:
+        valid = valid & (z <= depth_clip_max)
+    else:
+        # Dynamic outlier filtering to avoid squashing foreground into a tiny speck
+        valid_vals = z[valid]
+        if valid_vals.size > 0:
+            p98_5 = float(np.percentile(valid_vals, 98.5))
+            if p98_5 < valid_vals.max() * 0.7 and p98_5 > 0.5:
+                valid = valid & (z <= p98_5 * 1.1)
+
     u = xx[valid]
-    v = yy[valid]
+    v_coord = yy[valid]
     z_val = z[valid]
-    c_val = (np.clip(c[valid], 0.0, 1.0) * 255).astype(int)
+    c_sub = c[valid]
 
-    # Back-project (u, v, z) using metric pinhole camera geometry:
-    # X: horizontal width (m), Y: forward depth into scene (m), Z: vertical height (m, upright positive)
-    fx = fy = max(H, W) * 0.95
-    cx, cy = W / 2.0, H / 2.0
+    # Metric Camera Pinhole Focal Lengths adapted to sensor
+    ds_lower = dataset_name.lower()
+    if "kitti" in ds_lower:
+        focal_scale = 1.85
+        asp_ratio = dict(x=1.0, y=1.35, z=0.55)
+    elif "middlebury" in ds_lower or "artroom" in ds_lower or "chess" in ds_lower:
+        focal_scale = 1.35
+        asp_ratio = dict(x=1.0, y=1.1, z=0.85)
+    else:  # NYUv2 / In-the-wild camera
+        focal_scale = 1.15
+        asp_ratio = dict(x=1.0, y=1.15, z=0.8)
+
+    fx = fy = float(W) * focal_scale
+    cx, cy = float(W) / 2.0, float(H) / 2.0
+
+    # Back-projection to metric camera coordinate frame:
+    # X: horizontal width (m)
+    # Y: depth into scene (m, positive forward)
+    # Z: vertical height (m, upright positive)
     X = (u - cx) * z_val / fx
-    Y = z_val  # Forward depth into the screen
-    Z = -(v - cy) * z_val / fy  # Upright vertical height
+    Y = z_val
+    Z = -(v_coord - cy) * z_val / fy
 
-    colors_str = [f"rgb({r},{g},{b})" for r, g, b in c_val]
+    # Color mapping
+    if color_mode == "depth":
+        vmin = float(z_val.min()) if z_val.size > 0 else 0.5
+        vmax = float(z_val.max()) if z_val.size > 0 else 5.0
+        norm_z = np.clip((z_val - vmin) / max(vmax - vmin, 1e-6), 0.0, 1.0)
+        cmap = mpl.colormaps["turbo"]
+        mapped_rgba = (cmap(norm_z)[:, :3] * 255).astype(int)
+        colors_str = [f"rgb({r},{g},{b})" for r, g, b in mapped_rgba]
+    elif color_mode == "discontinuity":
+        gx = np.abs(np.gradient(depth, axis=1))[::stride, ::stride][valid]
+        gy = np.abs(np.gradient(depth, axis=0))[::stride, ::stride][valid]
+        grad_mag = np.sqrt(gx**2 + gy**2)
+        thresh = float(np.percentile(grad_mag, 85)) if grad_mag.size > 0 else 0.2
+        is_flying = grad_mag > thresh
+        colors_str = []
+        c_base = (np.clip(c_sub, 0.0, 1.0) * 255).astype(int)
+        for i, (r, g, b) in enumerate(c_base):
+            if is_flying[i]:
+                colors_str.append("rgb(255, 55, 55)")  # Flying pixel / edge boundary in scarlet red
+            else:
+                colors_str.append(f"rgb({r},{g},{b})")
+    else:
+        c_val = (np.clip(c_sub, 0.0, 1.0) * 255).astype(int)
+        colors_str = [f"rgb({r},{g},{b})" for r, g, b in c_val]
 
     fig = go.Figure(
         data=[
@@ -103,21 +160,22 @@ def build_3d_point_cloud_figure(
                 y=Y,
                 z=Z,
                 mode="markers",
-                marker=dict(size=2.2, color=colors_str, opacity=0.92),
+                marker=dict(size=point_size, color=colors_str, opacity=0.96),
             )
         ]
     )
     fig.update_layout(
         title=title,
         margin=dict(l=0, r=0, b=0, t=35),
-        height=480,
+        height=height,
         scene=dict(
             xaxis_title="Width X (m)",
-            yaxis_title="Depth Z (m)",
-            zaxis_title="Height Y (m)",
-            aspectmode="data",
+            yaxis_title="Depth into Scene (m)",
+            zaxis_title="Height Up (m)",
+            aspectmode="manual",
+            aspectratio=asp_ratio,
             camera=dict(
-                eye=dict(x=0.0, y=-1.65, z=0.65),
+                eye=dict(x=0.55, y=-1.45, z=0.55),
                 up=dict(x=0, y=0, z=1),
             ),
         ),
@@ -703,23 +761,121 @@ def main() -> None:
             "Conventional interpolation (`Bicubic`) produces **flying pixels** bridging foreground and background objects at occlusion boundaries. "
             "Our **Hybrid EG-DepthNet Reconstruction** preserves crisp 3D geometric step boundaries matching the Ground Truth target."
         )
-        pc1, pc2, pc3 = st.columns(3)
-        with pc1:
-            st.plotly_chart(
-                build_3d_point_cloud_figure(preds["bicubic"], rgb_np, "Bicubic Baseline (Flying Pixels at Edges)"),
-                use_container_width=True,
+
+        # 3D Viewport Controls
+        pc_c1, pc_c2, pc_c3 = st.columns([1.2, 1.0, 1.0])
+        with pc_c1:
+            pc_layout_mode = st.radio(
+                "3D Display Layout",
+                options=["side_by_side", "hero_hybrid", "hero_bicubic", "hero_gt"],
+                format_func=lambda x: {
+                    "side_by_side": "📊 3-Way Side-by-Side (Bicubic vs. Hybrid vs. Target)",
+                    "hero_hybrid": "🚀 Hero Focus: Hybrid EG-DepthNet (Full View)",
+                    "hero_bicubic": "🔎 Hero Focus: Bicubic Baseline (Inspect Flying Pixels)",
+                    "hero_gt": "🎯 Hero Focus: Ground Truth Target (Ideal Geometry)",
+                }[x],
+                horizontal=False,
             )
-        with pc2:
+        with pc_c2:
+            pc_color_mode = st.selectbox(
+                "Point Cloud Color Palette",
+                options=["rgb", "depth", "discontinuity"],
+                format_func=lambda x: {
+                    "rgb": "🎨 Realistic RGB Camera Texture",
+                    "depth": "🌈 Turbo Depth Colormap (Metric Z)",
+                    "discontinuity": "🚨 Edge & Flying Pixels Spotlight (Red Edges)",
+                }[x],
+            )
+            filter_sky = st.checkbox(
+                "Filter Invalid Sensor / Sky Holes",
+                value=True,
+                help="Suppresses the floating sky dome in KITTI and missing sensor holes in NYUv2 so points match ground truth 1:1.",
+            )
+        with pc_c3:
+            stride_choice = st.select_slider(
+                "Point Cloud Density",
+                options=[1, 2, 3],
+                value=2,
+                format_func=lambda s: {
+                    1: "Ultra Dense (1× Stride ~65k pts)",
+                    2: "High Quality (2× Stride ~16k pts)",
+                    3: "Fast Preview (3× Stride ~7k pts)",
+                }[s],
+            )
+            pt_size = st.slider("Point Size", min_value=1.5, max_value=5.0, value=3.0, step=0.5)
+
+        mask_to_use = valid_gt_np if filter_sky else None
+
+        if pc_layout_mode == "side_by_side":
+            pc1, pc2, pc3 = st.columns(3)
+            with pc1:
+                st.plotly_chart(
+                    build_3d_point_cloud_figure(
+                        preds["bicubic"],
+                        rgb_np,
+                        "Bicubic Baseline (Flying Pixels at Edges)",
+                        valid_mask=mask_to_use,
+                        stride=stride_choice,
+                        point_size=pt_size,
+                        dataset_name=dataset_choice,
+                        color_mode=pc_color_mode,
+                        height=520,
+                    ),
+                    use_container_width=True,
+                )
+            with pc2:
+                st.plotly_chart(
+                    build_3d_point_cloud_figure(
+                        preds["hybrid"],
+                        rgb_np,
+                        "Hybrid EG-DepthNet (Crisp 3D Discontinuities)",
+                        valid_mask=mask_to_use,
+                        stride=stride_choice,
+                        point_size=pt_size,
+                        dataset_name=dataset_choice,
+                        color_mode=pc_color_mode,
+                        height=520,
+                    ),
+                    use_container_width=True,
+                )
+            with pc3:
+                st.plotly_chart(
+                    build_3d_point_cloud_figure(
+                        gt_np,
+                        rgb_np,
+                        "Ground Truth Target (Ideal 3D Geometry)",
+                        valid_mask=mask_to_use,
+                        stride=stride_choice,
+                        point_size=pt_size,
+                        dataset_name=dataset_choice,
+                        color_mode=pc_color_mode,
+                        height=520,
+                    ),
+                    use_container_width=True,
+                )
+        else:
+            chosen_key = (
+                "hybrid"
+                if pc_layout_mode == "hero_hybrid"
+                else ("bicubic" if pc_layout_mode == "hero_bicubic" else "gt")
+            )
+            depth_to_plot = preds[chosen_key] if chosen_key in preds else gt_np
+            hero_title = {
+                "hybrid": "Hybrid EG-DepthNet (Crisp 3D Discontinuities — Full View)",
+                "bicubic": "Bicubic Baseline (Notice Blurry Slanted Flying Pixels — Full View)",
+                "gt": "Ground Truth Target (Ideal Metric Reference — Full View)",
+            }[chosen_key]
             st.plotly_chart(
                 build_3d_point_cloud_figure(
-                    preds["hybrid"], rgb_np, "Hybrid EG-DepthNet (Crisp 3D Discontinuities)"
-                ),
-                use_container_width=True,
-            )
-        with pc3:
-            st.plotly_chart(
-                build_3d_point_cloud_figure(
-                    gt_np, rgb_np, "Ground Truth Target (Ideal 3D Geometry)"
+                    depth_to_plot,
+                    rgb_np,
+                    hero_title,
+                    valid_mask=mask_to_use,
+                    stride=stride_choice,
+                    point_size=pt_size,
+                    dataset_name=dataset_choice,
+                    color_mode=pc_color_mode,
+                    height=680,
                 ),
                 use_container_width=True,
             )
