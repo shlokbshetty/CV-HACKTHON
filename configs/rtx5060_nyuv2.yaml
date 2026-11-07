@@ -5,7 +5,7 @@ hardware:
   device: "cuda"
   precision: "bf16"          # Native Blackwell (RTX 5060) & Ada (RTX 4050) Tensor Core bfloat16
   cache_in_ram: true         # Fits full 2.8GB NYUv2 + Middlebury + KITTI in 24GB System RAM
-  num_workers: 4
+  num_workers: 0             # 0 on Windows to prevent HDF5/multiprocessing spawn deadlocks
   pin_memory: true
 
 data:
@@ -26,11 +26,12 @@ model:
 
 training:
   epochs: 60
-  batch_size: 12             # Uses ~5.4 GB / 8.0 GB VRAM in bf16 at 256x256
+  batch_size: 6              # Uses ~5.1 GB / 8.0 GB VRAM in bf16 at 256x256 without swapping
   learning_rate: 0.0004
   min_lr: 0.00001
   weight_decay: 0.0001
   grad_clip_norm: 1.0
+  early_stopping_patience: 8
   save_dir: "checkpoints"
 
 loss:

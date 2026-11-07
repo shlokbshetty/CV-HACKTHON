@@ -1,6 +1,38 @@
-.agents
-.agent
+# Dependencies & Package Managers
+node_modules/
+**/node_modules/
+frontend/node_modules/
+.pnpm-store/
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+# Specs and root samples
+/docs/
+/samples/
+/reference/
+/specs/
+.agent/
+.agents/
+*.webp
+
+# Generated Mock Assets
+frontend/public/assets/hero/source/
+frontend/public/fonts/
+
+# Production build outputs
+dist/
+build/
+frontend/dist/
+web/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# Python / ML Training / System
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 *$py.class
@@ -8,30 +40,19 @@ __pycache__/
 .data/*
 /data/
 checkpoints/
-outputs/
+/checkpoints/
+outputs/debug_vis/
+scratch/
 *.pt
 *.pth
 *.npz
 *.mat
 *.zip
 *.egg-info/
-dist/
-build/
+*.log
+
+# OS metadata & local editor
 .DS_Store
-.venv/
-__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-/data/
-checkpoints/
-outputs/
-*.pt
-*.pth
-*.npz
-*.mat
-*.zip
-*.egg-info/
-dist/
-build/
-.DS_Store
+Thumbs.db
+.idea/
+.vscode/

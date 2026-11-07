@@ -182,5 +182,8 @@ def predict_with_geometric_tta(
         coarse_depth=coarse_tta,
         uncertainty=unc_tta,
         edge_gate=gate_tta,
+        depth_prior=out_orig.depth_prior,
+        mask_bicubic=out_orig.mask_bicubic,
+        feature_vis=out_orig.feature_vis,
     )
 

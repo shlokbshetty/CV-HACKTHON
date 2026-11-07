@@ -1,4 +1,8 @@
-"""Dataset registry and sensor degradation helpers."""
+"""
+Dataset Registry and Sensor Degradation Subpackage for Depth Super-Resolution (ProbID - P4).
+"""
+
+from __future__ import annotations
 
 from depth_refine.data.dataset_registry import (
     MiddleburyDataset,
@@ -25,3 +29,4 @@ __all__ = [
     "MiddleburyDataset",
     "SyntheticRGBDDataset",
 ]
+

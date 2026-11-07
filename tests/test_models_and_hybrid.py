@@ -71,6 +71,9 @@ def test_int8_quantization_and_geometric_tta() -> None:
     res_int8 = engine.reconstruct(
         sample.depth_lr, rgb_hr=sample.rgb_hr, scale=4, valid_mask_lr=sample.valid_mask_lr, precision="int8"
     )
+    res_fp32 = engine.reconstruct(
+        sample.depth_lr, rgb_hr=sample.rgb_hr, scale=4, valid_mask_lr=sample.valid_mask_lr, precision="fp32"
+    )
     res_tta = engine.reconstruct(
         sample.depth_lr,
         rgb_hr=sample.rgb_hr,
@@ -82,5 +85,5 @@ def test_int8_quantization_and_geometric_tta() -> None:
     assert res_int8.depth_hybrid.shape == (1, 64, 64)
     assert res_tta.depth_hybrid.shape == (1, 64, 64)
     # Verify INT8 output is within 5mm of FP32 output
-    diff = torch.abs(res_int8.depth_hybrid - res_tta.depth_hybrid).mean().item()
+    diff = torch.abs(res_int8.depth_hybrid - res_fp32.depth_hybrid).mean().item()
     assert diff < 0.02
