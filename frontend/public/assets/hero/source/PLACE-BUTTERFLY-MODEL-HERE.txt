@@ -1,0 +1,4 @@
+Put the butterfly model here as butterfly.glb
+(or butterfly.gltf with its .bin and texture files next to it).
+Before downloading, check the model page shows the licence you expect (CC0 or CC BY) and a Download button.
+Then fill in docs/credits-input.md.

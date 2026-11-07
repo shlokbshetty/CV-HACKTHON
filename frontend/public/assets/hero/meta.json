@@ -1,0 +1,14 @@
+{
+  "asset": "Papilio machaon 3D relief",
+  "dimensions": [
+    1024,
+    1024
+  ],
+  "near_units": 0.45,
+  "far_units": 1.85,
+  "valid_pixel_count": 461451,
+  "sparse_sample_count": 13843,
+  "sparse_sampling_pct": 3.0,
+  "discontinuity_threshold": 0.08,
+  "seed": 42
+}

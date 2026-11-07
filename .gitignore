@@ -1,5 +1,28 @@
-.agents
-.agent
+# Dependencies & Package Managers
+node_modules/
+**/node_modules/
+frontend/node_modules/
+.pnpm-store/
+pnpm-lock.yaml
+pnpm-workspace.yaml
+
+# Build Outputs
+dist/
+build/
+frontend/dist/
+web/
+
+# Assets & Specs
+docs/
+/docs/
+samples/
+/samples/
+.agent/
+.agents/
+*.webp
+frontend/public/assets/hero/
+frontend/public/assets/samples/
+frontend/public/fonts/
 .venv/
 __pycache__/
 *.py[cod]
