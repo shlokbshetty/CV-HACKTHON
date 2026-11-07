@@ -47,7 +47,7 @@ def colorize_depth(
     vmax: float | None = None,
     cmap_name: str = "turbo",
     invalid_mask: np.ndarray | None = None,
-    mode: str = "disparity",
+    mode: str = "linear",
     overlay_edges: bool = False,
     rgb_guidance: np.ndarray | None = None,
 ) -> np.ndarray:
@@ -74,13 +74,15 @@ def colorize_depth(
         l_max = float(np.percentile(l_valid, 98)) if l_valid.size > 0 else float(log_d.max())
         norm = 1.0 - np.clip((log_d - l_min) / max(l_max - l_min, 1e-6), 0.0, 1.0)
     else:  # Linear metric depth
-        if vmin is None:
-            valid = depth[depth > 1e-3]
-            vmin = float(np.percentile(valid, 2)) if valid.size > 0 else 0.5
-        if vmax is None:
-            valid = depth[depth > 1e-3]
-            vmax = float(np.percentile(valid, 98)) if valid.size > 0 else 6.0
-        norm = np.clip((depth - vmin) / max(vmax - vmin, 1e-6), 0.0, 1.0)
+        if vmin is None or vmax is None:
+            valid = depth[(depth > 0.05) & np.isfinite(depth)]
+            if invalid_mask is not None:
+                valid = valid[~invalid_mask[(depth > 0.05) & np.isfinite(depth)]]
+            v_min = float(np.percentile(valid, 2)) if (valid.size > 0 and vmin is None) else (vmin if vmin is not None else 0.5)
+            v_max = float(np.percentile(valid, 98)) if (valid.size > 0 and vmax is None) else (vmax if vmax is not None else 5.0)
+        else:
+            v_min, v_max = vmin, vmax
+        norm = np.clip((depth - v_min) / max(v_max - v_min, 1e-6), 0.0, 1.0)
 
     try:
         cmap = mpl.colormaps[cmap_name]
@@ -125,21 +127,16 @@ def build_3d_point_cloud_figure(
     z = depth[::stride, ::stride]
     c = rgb[::stride, ::stride]
 
-    # Sensor validity & outlier clipping
-    valid = (z > 0.05) & np.isfinite(z)
+    # Sensor validity & physical scene bounds
+    ds_lower = dataset_name.lower()
+    max_metric_depth = 80.0 if "kitti" in ds_lower else 8.0
+    valid = (z > 0.05) & (z <= max_metric_depth) & np.isfinite(z)
     if valid_mask is not None:
         v_sub = valid_mask[::stride, ::stride]
         valid = valid & v_sub
 
     if depth_clip_max is not None and depth_clip_max > 0.1:
         valid = valid & (z <= depth_clip_max)
-    else:
-        # Dynamic outlier filtering to avoid squashing foreground into a tiny speck
-        valid_vals = z[valid]
-        if valid_vals.size > 0:
-            p98_5 = float(np.percentile(valid_vals, 98.5))
-            if p98_5 < valid_vals.max() * 0.7 and p98_5 > 0.5:
-                valid = valid & (z <= p98_5 * 1.1)
 
     u = xx[valid]
     v_coord = yy[valid]
@@ -147,7 +144,6 @@ def build_3d_point_cloud_figure(
     c_sub = c[valid]
 
     # Metric Camera Pinhole Focal Lengths adapted to sensor
-    ds_lower = dataset_name.lower()
     if "kitti" in ds_lower:
         focal_scale = 1.85
         asp_ratio = dict(x=1.0, y=1.35, z=0.55)
@@ -173,13 +169,10 @@ def build_3d_point_cloud_figure(
         gx = np.abs(np.gradient(depth, axis=1))[::stride, ::stride][valid]
         gy = np.abs(np.gradient(depth, axis=0))[::stride, ::stride][valid]
         grad_mag = np.sqrt(gx**2 + gy**2)
-        if edge_gate is not None:
-            eg_sub = edge_gate[::stride, ::stride][valid]
-            p80 = float(np.percentile(grad_mag, 80)) if grad_mag.size > 0 else 0.5
-            keep = ~((eg_sub > 0.40) & (grad_mag > p80))
-        else:
-            thresh = float(np.percentile(grad_mag, 92)) if grad_mag.size > 0 else 1.0
-            keep = grad_mag < thresh
+        # Prune only true mid-air flying pixel bridge slopes across depth discontinuities
+        rel_grad = grad_mag / np.maximum(z_val, 0.1)
+        is_flying_bridge = (rel_grad > 0.40) & (grad_mag > 0.50)
+        keep = ~is_flying_bridge
         X, Y, Z = X[keep], Y[keep], Z[keep]
         c_sub = c_sub[keep]
         z_val = z_val[keep]
@@ -250,86 +243,67 @@ def build_3d_point_cloud_figure(
 
 def generate_camera_depth_prior(rgb_np: np.ndarray) -> np.ndarray:
     """
-    Generate an intelligent, multi-cue, edge-preserving geometric depth prior for any arbitrary real-world photo.
-    Combines:
-    1. Multi-scale color saliency in LAB space + high-frequency focus
-    2. GrabCut / adaptive foreground subject segmentation (creating discrete 3D object layers)
-    3. Ground-plane perspective vanishing gradient (near at bottom, far at top)
-    4. Canny-guided bilateral edge snapping (locking silhouettes to 1-pixel RGB contours)
-    Range: [0.8m, 5.0m] (natural human/object scale).
+    Generate an intelligent, continuous, edge-preserving geometric depth prior for any camera photo.
+    Supports arbitrary perspective angles (side angle, tabletop, eye-level, indoor/outdoor).
+
+    Principles:
+    1. Continuous Perspective Ground/Support Plane:
+       Standard optical perspective creates a continuous depth gradient from the bottom of the frame
+       (closest to camera, ~0.85m) to the top (deep into the background, ~3.5m).
+    2. Continuous 3D Object Surface Relief:
+       Physical objects resting on the table/floor protrude upward toward the camera.
+       Protrusion (relief) is continuously estimated from multi-scale focus, color saliency,
+       and illumination contrast (dz ~ 0.1m - 0.35m), preserving the natural slant of the object
+       from front to back rather than flattening it into an artificial cutout.
+    3. Edge-Preserving Bilateral Guidance:
+       Refines the continuous depth field using RGB image contours so boundaries align sharply
+       with physical object edges while interior surfaces remain smooth and continuously curved.
     """
     H, W = rgb_np.shape[:2]
     img_u8 = (np.clip(rgb_np, 0.0, 1.0) * 255.0).astype(np.uint8)
     gray_u8 = cv2.cvtColor(img_u8, cv2.COLOR_RGB2GRAY)
+    gray_f = gray_u8.astype(np.float32) / 255.0
 
     yy, xx = np.mgrid[0:H, 0:W]
     y_norm = yy.astype(np.float32) / max(H, 1)
-    x_norm = xx.astype(np.float32) / max(W, 1)
 
-    # 1. Multi-scale Saliency in LAB color space
-    lab = cv2.cvtColor(img_u8, cv2.COLOR_RGB2LAB).astype(np.float32)
-    mean_lab = lab.mean(axis=(0, 1), keepdims=True)
-    color_diff = np.linalg.norm(lab - mean_lab, axis=-1)
-    saliency = cv2.GaussianBlur(color_diff, (21, 21), 0)
-    s_norm = (saliency - saliency.min()) / max(float(saliency.max() - saliency.min()), 1e-5)
+    # 1. Perspective Support Plane (continuous monotonic slant)
+    # Bottom of image is closest (~0.85m), top of image is farthest (~3.5m)
+    z_support = 3.5 - 2.65 * (y_norm ** 0.85)
 
-    # 2. High-Frequency Focus / Sharpness (Laplacian on 2D grayscale)
+    # 2. Multi-Cue Continuous Surface Relief
+    # Focus / High-frequency sharpness (focused objects are in focal zone)
     lap = np.abs(cv2.Laplacian(gray_u8, cv2.CV_32F))
-    focus = cv2.GaussianBlur(lap, (25, 25), 0)
-    f_norm = (focus - focus.min()) / max(float(focus.max() - focus.min()), 1e-5)
+    focus = cv2.GaussianBlur(lap, (15, 15), 0)
+    f_norm = (focus - focus.min()) / max(float(focus.max() - focus.min()), 1e-4)
 
-    # 3. Central subject framing prior (Gaussian centered at (0.5, 0.52))
-    center_dist_sq = (x_norm - 0.5) ** 2 + ((y_norm - 0.52) * 1.2) ** 2
-    center_prior = np.exp(-center_dist_sq / 0.18).astype(np.float32)
+    # Color Saliency in LAB space (foreground subject color contrast)
+    lab = cv2.cvtColor(img_u8, cv2.COLOR_RGB2LAB).astype(np.float32)
+    color_diff = np.linalg.norm(lab - lab.mean(axis=(0, 1), keepdims=True), axis=-1)
+    saliency = cv2.GaussianBlur(color_diff, (19, 19), 0)
+    s_norm = (saliency - saliency.min()) / max(float(saliency.max() - saliency.min()), 1e-4)
 
-    # 4. Foreground probability map
-    fg_prob = (0.40 * s_norm + 0.35 * f_norm + 0.25 * center_prior).astype(np.float32)
+    # Shading / Luminance curvature
+    shading = cv2.GaussianBlur(1.0 - gray_f, (9, 9), 0)
 
-    # 5. GrabCut Subject Silhouette Segmentation
-    thresh = float(np.percentile(fg_prob, 70))
-    fg_candidate = fg_prob > thresh
-    y_indices, x_indices = np.where(fg_candidate)
+    # Continuous relief: foreground objects stand up to 0.35m closer to the camera
+    relief = 0.45 * f_norm + 0.35 * s_norm + 0.20 * shading
+    relief = cv2.GaussianBlur(relief, (11, 11), 0)
+    z_raw = z_support - 0.35 * relief
 
-    if len(y_indices) > 50:
-        y_min, y_max = max(0, int(y_indices.min()) - 10), min(H - 1, int(y_indices.max()) + 10)
-        x_min, x_max = max(0, int(x_indices.min()) - 10), min(W - 1, int(x_indices.max()) + 10)
-        if (x_max - x_min > 20) and (y_max - y_min > 20):
-            mask_gc = np.zeros((H, W), np.uint8)
-            mask_gc.fill(cv2.GC_BGD)
-            mask_gc[y_min:y_max, x_min:x_max] = cv2.GC_PR_FGD
-            mask_gc[fg_prob > np.percentile(fg_prob, 85)] = cv2.GC_FGD
-            mask_gc[fg_prob < np.percentile(fg_prob, 25)] = cv2.GC_BGD
-            bgdModel = np.zeros((1, 65), np.float64)
-            fgdModel = np.zeros((1, 65), np.float64)
-            try:
-                cv2.grabCut(img_u8, mask_gc, None, bgdModel, fgdModel, 2, cv2.GC_INIT_WITH_MASK)
-                subject_mask = np.where((mask_gc == cv2.GC_FGD) | (mask_gc == cv2.GC_PR_FGD), 1.0, 0.0).astype(np.float32)
-            except Exception:
-                subject_mask = (fg_prob > thresh).astype(np.float32)
-        else:
-            subject_mask = (fg_prob > thresh).astype(np.float32)
-    else:
-        subject_mask = (fg_prob > thresh).astype(np.float32)
+    # 3. Bilateral Edge Alignment with RGB Guidance
+    # Preserves smooth internal slopes across surfaces while snapping silhouettes to RGB contours
+    depth_smooth = cv2.bilateralFilter(z_raw.astype(np.float32), d=9, sigmaColor=0.15, sigmaSpace=9.0)
 
-    subject_mask = cv2.GaussianBlur(subject_mask, (5, 5), 0)
-
-    # 6. Physical Depth Assignment
-    # Background plane: perspective slope from 2.2m at bottom to 4.8m at top
-    bg_depth = 4.8 - 2.6 * (y_norm ** 0.8)
-    # Foreground subject depth: solid planar depth around 1.3m (with slight perspective)
-    fg_depth = 1.25 + 0.35 * y_norm
-    depth_raw = (1.0 - subject_mask) * bg_depth + subject_mask * fg_depth
-
-    # 7. Bilateral Edge Snapping along optical RGB contours
-    depth_smooth = cv2.bilateralFilter(depth_raw.astype(np.float32), d=7, sigmaColor=0.20, sigmaSpace=7.0)
-    edges = cv2.Canny(gray_u8, 50, 150) > 0
+    # Subtle 1-pixel shock filter along strong Canny contours to prevent boundary bleeding
+    edges = cv2.Canny(gray_u8, 40, 120) > 0
     d_erode = cv2.erode(depth_smooth, np.ones((3, 3), np.uint8))
     d_dilate = cv2.dilate(depth_smooth, np.ones((3, 3), np.uint8))
     mid = 0.5 * (d_erode + d_dilate)
     target = np.where(depth_smooth <= mid, d_erode, d_dilate)
-    depth_final = np.where(edges, target, depth_smooth)
+    depth_final = np.where(edges, 0.65 * target + 0.35 * depth_smooth, depth_smooth)
 
-    return np.clip(depth_final, 0.8, 5.0).astype(np.float32)
+    return np.clip(depth_final, 0.6, 5.0).astype(np.float32)
 
 
 def main() -> None:
@@ -381,14 +355,14 @@ def main() -> None:
 
     viz_mode = st.sidebar.selectbox(
         "2D Depth Contrast Mode",
-        options=["disparity", "linear", "log"],
+        options=["linear", "disparity", "log"],
         index=0,
         format_func=lambda x: {
-            "disparity": "✨ Perceptual Disparity (1/d — Crisp Silhouettes)",
-            "linear": "📏 Metric Depth (Linear Meters)",
+            "linear": "📏 Metric Depth (Continuous Physical Distance)",
+            "disparity": "✨ Perceptual Disparity (Inverse Depth 1/d)",
             "log": "📐 Logarithmic Depth",
         }[x],
-        help="Perceptual Disparity stretches near-range contrast, making foreground objects pop with sharp boundaries matching research paper figures.",
+        help="Metric Depth colorizes physical distance in meters (blue=near, yellow/red=far). Perceptual Disparity inverts depth.",
     )
 
     overlay_edges = st.sidebar.checkbox(
@@ -997,13 +971,13 @@ def main() -> None:
                         rgb_np,
                         "Ground Truth Target (Ideal 3D Geometry)",
                         valid_mask=mask_to_use,
-                        edge_gate=edge_gate_np,
+                        edge_gate=None,
                         stride=stride_choice,
                         point_size=pt_size,
                         dataset_name=dataset_choice,
                         color_mode=pc_color_mode,
                         height=520,
-                        disconnect_flying_pixels=disconnect_edges,
+                        disconnect_flying_pixels=False,
                     ),
                     use_container_width=True,
                 )
@@ -1025,13 +999,13 @@ def main() -> None:
                     rgb_np,
                     hero_title,
                     valid_mask=mask_to_use,
-                    edge_gate=edge_gate_np,
+                    edge_gate=edge_gate_np if chosen_key != "gt" else None,
                     stride=stride_choice,
                     point_size=pt_size,
                     dataset_name=dataset_choice,
                     color_mode=pc_color_mode,
                     height=680,
-                    disconnect_flying_pixels=disconnect_edges,
+                    disconnect_flying_pixels=disconnect_edges if chosen_key != "gt" else False,
                 ),
                 use_container_width=True,
             )
