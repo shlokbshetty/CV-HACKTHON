@@ -5,8 +5,8 @@
 | **Problem ID** | `P4` (Computer Vision / Sensor Processing) |
 | **Problem Title** | Edge-Preserving Depth Map Upsampling and Refinement via Edge-Gated Cross-Attention & Bilateral Mode Energy Minimization |
 | **Team Name** | DepthLab (`TeamID`) |
-| **Team Members** | Shlok B Shetty — `[USN_1]`<br>Shree Yadav — `[USN_2]`<br>Siddharth S Gadekar — `[USN_3]`<br>`[Member_4_Name]` — `[USN_4]` |
-| **GitHub Repository** | [https://github.com/shlokbshetty/CV-HACKTHON](https://github.com/shlokbshetty/CV-HACKTHON) *(Evaluated Commit: `6e435c6`)* |
+| **Team Members** | Shlok Shetty — `1RUA24CSE0433`<br>Shree Santosh Yadav — `1RUA24CSE0436`<br>Shiveshwar Sanjay Magadum — `1RUA24CSE0432`<br>Siddharth S Gadekar — `1RUA24CSE0456`<br>Shashank Tandan — `1RUA24CSE0425` |
+| **GitHub Repository** | [https://github.com/shlokbshetty/Depth-lab](https://github.com/shlokbshetty/Depth-lab) *(Evaluated Commit: `7b590be`)* |
 | **Live Demo / Deployment** | **Next-Gen Web Studio (React 18 + Three.js + Vite)**: `http://localhost:5173`<br>**Streamlit Studio Dashboard**: `http://localhost:8501` / Streamlit Community Cloud<br>**Docker Container**: `docker run -p 8501:8501 depth-refine-p4` |
 
 ---
@@ -249,8 +249,8 @@ flowchart LR
 #### 1. Setup Environment & Dependencies
 ```bash
 # Clone the repository
-git clone https://github.com/shlokbshetty/CV-HACKTHON.git
-cd CV-HACKTHON
+git clone https://github.com/shlokbshetty/Depth-lab.git
+cd Depth-lab
 
 # Option A: Fast installation via uv (Recommended)
 uv venv --python 3.12
@@ -314,7 +314,7 @@ docker run -d -p 8501:8501 --name depth-refine depth-refine-p4
 ---
 
 ### Student Submission Checklist
-- [x] **Working GitHub repository link included with an updated `README.md`**: Verified at `https://github.com/shlokbshetty/CV-HACKTHON` (Commit: `6e435c6`).
+- [x] **Working GitHub repository link included with an updated `README.md`**: Verified at `https://github.com/shlokbshetty/Depth-lab` (Commit: `7b590be`).
 - [x] **No raw code pasted into this report**: Structural architecture, equations, tables, and module references only.
 - [x] **All table metrics match test runs reproducible via the repository**: Matches `outputs/benchmark_report.md`, `outputs/ablation_report.md`, and test suite results.
 - [x] **All team member details accurately recorded**: Documented in metadata table.
