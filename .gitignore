@@ -20,7 +20,7 @@ specs/
 *.webp
 
 # Generated Mock Assets
-frontend/public/assets/hero/
+frontend/public/assets/hero/source/
 frontend/public/assets/samples/
 frontend/public/assets/benchmark/
 frontend/public/fonts/
