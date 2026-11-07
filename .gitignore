@@ -48,8 +48,8 @@ data/
 /data/
 checkpoints/
 /checkpoints/
-outputs/
-/outputs/
+outputs/debug_vis/
+scratch/
 *.pt
 *.pth
 *.npz

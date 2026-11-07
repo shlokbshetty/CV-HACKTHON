@@ -55,6 +55,122 @@ class HybridReconstructionResult:
     feature_vis: Optional[torch.Tensor] = None  # Raw 2x/4x/8x Neural Feature Map (LoftUp (c))
 
 
+def box_filter(x: torch.Tensor, r: int) -> torch.Tensor:
+    k = 2 * r + 1
+    return F.avg_pool2d(F.pad(x, (r, r, r, r), mode="reflect"), kernel_size=k, stride=1)
+
+
+def fast_guided_filter(guide_rgb: torch.Tensor, src_depth: torch.Tensor, r: int = 4, eps: float = 1e-4) -> torch.Tensor:
+    """Fast luminance-guided filter in PyTorch."""
+    if guide_rgb.shape[1] == 3:
+        I = 0.299 * guide_rgb[:, 0:1] + 0.587 * guide_rgb[:, 1:2] + 0.114 * guide_rgb[:, 2:3]
+    else:
+        I = guide_rgb
+    p = src_depth
+    mean_I = box_filter(I, r)
+    mean_p = box_filter(p, r)
+    mean_Ip = box_filter(I * p, r)
+    cov_Ip = mean_Ip - mean_I * mean_p
+    mean_II = box_filter(I * I, r)
+    var_I = mean_II - mean_I * mean_I
+    a = cov_Ip / (var_I + eps)
+    b = mean_p - a * mean_I
+    mean_a = box_filter(a, r)
+    mean_b = box_filter(b, r)
+    return mean_a * I + mean_b
+
+
+@torch.no_grad()
+def zero_training_hybrid_boost(
+    d_pred_hr: torch.Tensor,
+    d_lr: torch.Tensor,
+    rgb_hr: torch.Tensor,
+    scale: int,
+    disc_thresh: float = 0.25,
+    valid_mask_lr: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """
+    Zero-training post-processor for Epoch 59 checkpoint:
+    1. Iterative Back-Projection (Hard LR Sensor Consistency)
+    2. Edge-Guided Residual Propagation
+    3. Morphological Min-Max Envelope Clamping
+    4. RGB-Affinity Discontinuity Snapping (slashes Boundary RMSE)
+    """
+    H, W = d_pred_hr.shape[-2], d_pred_hr.shape[-1]
+    if valid_mask_lr is not None:
+        valid_lr = ((valid_mask_lr > 0.5) & (d_lr > 1e-3) & torch.isfinite(d_lr)).float()
+    else:
+        valid_lr = ((d_lr > 1e-3) & torch.isfinite(d_lr)).float()
+
+    # Step 0: Fill any missing holes in LR input before anchoring using predicted depth
+    d_pred_lr_init = F.interpolate(d_pred_hr, size=d_lr.shape[-2:], mode="area")
+    if (valid_lr < 0.5).any():
+        d_lr_filled = torch.where(valid_lr > 0.5, d_lr, d_pred_lr_init)
+    else:
+        d_lr_filled = d_lr
+
+    # Step 1: 2-Iteration Edge-Guided Back-Projection (Fixes global scale/bias drift)
+    d_refined = d_pred_hr.clone()
+    for _ in range(2):
+        d_pred_lr = F.interpolate(d_refined, size=d_lr_filled.shape[-2:], mode="area")
+        err_lr = (d_lr_filled - d_pred_lr) * valid_lr
+        err_hr = F.interpolate(err_lr, size=(H, W), mode="bicubic", align_corners=False)
+        err_hr_guided = fast_guided_filter(rgb_hr, err_hr, r=max(2, scale), eps=1e-4)
+        d_refined = d_refined + err_hr_guided
+
+    # Step 2: Local 3x3 Morphological Min-Max Envelope Clamping (Eliminates overshoot halos)
+    d_max_lr = F.max_pool2d(F.pad(d_lr_filled, (1, 1, 1, 1), mode="replicate"), kernel_size=3, stride=1)
+    d_min_lr = -F.max_pool2d(F.pad(-d_lr_filled, (1, 1, 1, 1), mode="replicate"), kernel_size=3, stride=1)
+    d_max_hr = F.interpolate(d_max_lr, size=(H, W), mode="nearest")
+    d_min_hr = F.interpolate(d_min_lr, size=(H, W), mode="nearest")
+    d_refined = torch.clamp(d_refined, min=d_min_hr, max=d_max_hr)
+
+    # Step 3: Boundary Snapping / Shock Filtering at Depth Discontinuities
+    # Where depth jumps > disc_thresh, snap flying ramp pixels to foreground (d_min) or background (d_max)
+    is_boundary = ((d_max_hr - d_min_hr) > disc_thresh).float()
+    mid_depth = 0.5 * (d_max_hr + d_min_hr)
+    sharp_edge_depth = torch.where(d_refined < mid_depth, d_min_hr, d_max_hr)
+    # Blend sharply right on high-gradient RGB edges inside the discontinuity band
+    I = 0.299 * rgb_hr[:, 0:1] + 0.587 * rgb_hr[:, 1:2] + 0.114 * rgb_hr[:, 2:3]
+    grad_I = torch.abs(I - box_filter(I, r=1))
+    edge_weight = torch.clamp(grad_I * 8.0, 0.0, 1.0) * is_boundary
+    d_refined = (1.0 - 0.55 * edge_weight) * d_refined + (0.55 * edge_weight) * sharp_edge_depth
+
+    # Final subtle edge-preserving polish
+    d_refined = fast_guided_filter(rgb_hr, d_refined, r=2, eps=1e-4)
+    return torch.clamp(d_refined, min=d_min_hr, max=d_max_hr)
+
+
+class HybridSensorAnchoredRefiner(torch.nn.Module):
+    """
+    Zero-Training Hybrid Sensor-Anchored Refinement Module for Epoch 59 Checkpoint.
+    GPU-vectorized post-processor performing IBP sensor consistency, residual guided propagation,
+    morphological min-max envelope clamping, and RGB-affinity boundary snapping.
+    """
+
+    def __init__(self, disc_thresh: float = 0.25) -> None:
+        super().__init__()
+        self.disc_thresh = disc_thresh
+
+    @torch.no_grad()
+    def forward(
+        self,
+        d_pred_hr: torch.Tensor,
+        d_lr: torch.Tensor,
+        rgb_hr: torch.Tensor,
+        scale: int,
+        valid_mask_lr: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        return zero_training_hybrid_boost(
+            d_pred_hr=d_pred_hr,
+            d_lr=d_lr,
+            rgb_hr=rgb_hr,
+            scale=scale,
+            disc_thresh=self.disc_thresh,
+            valid_mask_lr=valid_mask_lr,
+        )
+
+
 class HybridReconstructor:
     """
     Deep Module orchestrating Classical + Deep + Variational/Bilateral Energy Refinement,
@@ -91,6 +207,7 @@ class HybridReconstructor:
         self.precision = precision
         if precision == "int8":
             self.enable_int8_quantization()
+        self.sensor_anchored_refiner = HybridSensorAnchoredRefiner().to(self.device)
 
     def load_checkpoint(self, path: Path | str) -> None:
         ckpt = torch.load(Path(path), map_location=self.device, weights_only=False)
@@ -268,6 +385,13 @@ class HybridReconstructor:
             d_anchored = d_anchored + bp_gain * conf_weight * (1.0 - edge_gate) * residual_hr
 
         d_hybrid = torch.clamp(d_anchored, min=0.05)
+        d_hybrid = self.sensor_anchored_refiner(
+            d_pred_hr=d_hybrid,
+            d_lr=depth_clean_lr,
+            rgb_hr=rgb_hr,
+            scale=scale,
+            valid_mask_lr=mask_clean_lr,
+        )
 
         if squeeze:
             return HybridReconstructionResult(

@@ -561,6 +561,9 @@ def reconstruct_classical(
 
     if method == "boundary_aware_classical":
         out, _ = bilateral_mode_snap_and_denoise(d_bicubic, rgb_hr, scale=scale)
+        from depth_refine.hybrid.hybrid_pipeline import zero_training_hybrid_boost
+
+        out = zero_training_hybrid_boost(out, depth_clean_lr, rgb_hr, scale=scale, valid_mask_lr=mask_clean_lr)
         return out.squeeze(0) if squeeze else out
 
     raise ValueError(f"Unknown classical method: {method}")

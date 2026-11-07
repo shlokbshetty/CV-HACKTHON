@@ -5,7 +5,7 @@ hardware:
   device: "cuda"
   precision: "bf16"          # Native Blackwell (RTX 5060) & Ada (RTX 4050) Tensor Core bfloat16
   cache_in_ram: true         # Fits full 2.8GB NYUv2 + Middlebury + KITTI in 24GB System RAM
-  num_workers: 2
+  num_workers: 0             # 0 on Windows to prevent HDF5/multiprocessing spawn deadlocks
   pin_memory: true
 
 data:

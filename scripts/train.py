@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -172,7 +173,7 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False, resume_path: Opt
         train_ds,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=0 if quick_pretrain else int(hw_cfg.get("num_workers", 2)),
+        num_workers=0 if (quick_pretrain or sys.platform == "win32") else int(hw_cfg.get("num_workers", 0)),
         pin_memory=(device.type == "cuda"),
         drop_last=True,
     )
@@ -187,18 +188,23 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False, resume_path: Opt
     ema_decay = float(model_cfg.get("ema_decay", 0.992))
 
     best_rmse = float("inf")
+    baseline_rmse = float("inf")
     history: List[Dict[str, Any]] = []
+    start_epoch = 1
 
     if resume_path and Path(resume_path).exists():
         console.print(f"[bold cyan]Resuming/fine-tuning weights from checkpoint: {resume_path}[/bold cyan]")
         ckpt = torch.load(resume_path, map_location=device, weights_only=False)
+        start_epoch = int(ckpt.get("epoch", 0)) + 1
         if "model_state_dict" in ckpt:
-            model.load_state_dict(ckpt["model_state_dict"])
+            res_m = model.load_state_dict(ckpt["model_state_dict"], strict=False)
+            if res_m.missing_keys:
+                console.print(f"[yellow]Loaded with newly initialized keys: {res_m.missing_keys}[/yellow]")
         if "ema_state_dict" in ckpt:
-            ema_model.load_state_dict(ckpt["ema_state_dict"])
+            ema_model.load_state_dict(ckpt["ema_state_dict"], strict=False)
         if "val_metrics" in ckpt and "RMSE" in ckpt["val_metrics"]:
-            best_rmse = float(ckpt["val_metrics"]["RMSE"])
-            console.print(f"[bold cyan]Baseline checkpoint Best RMSE: {best_rmse:.4f}m[/bold cyan]")
+            baseline_rmse = float(ckpt["val_metrics"]["RMSE"])
+            console.print(f"[bold cyan]Baseline checkpoint Best RMSE: {baseline_rmse:.4f}m[/bold cyan]")
         if "history" in ckpt and isinstance(ckpt["history"], list):
             history = list(ckpt["history"])
 
@@ -229,8 +235,9 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False, resume_path: Opt
 
     epochs_without_improvement = 0
     scales_cycle = [2, 4, 8]
+    end_epoch = start_epoch + epochs - 1
 
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, start_epoch + epochs):
         model.train()
         t0 = time.perf_counter()
         running_loss = 0.0
@@ -302,14 +309,16 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False, resume_path: Opt
         save_training_curves(history)
 
         console.print(
-            f"Epoch [{epoch:02d}/{epochs:02d}] ({dt:.1f}s) | Loss: {avg_loss:.4f} | "
+            f"Epoch [{epoch:02d}/{end_epoch:02d}] ({dt:.1f}s) | Loss: {avg_loss:.4f} | "
             f"Val 4x RMSE: {val_metrics['RMSE']:.4f}m | Boundary-RMSE: {val_metrics['Boundary_RMSE']:.4f}m | "
             f"PSNR: {val_metrics['PSNR']:.2f}dB | Edge-F1: {val_metrics['Edge_F1']:.4f}"
         )
 
-        if val_metrics["RMSE"] < best_rmse - 1e-5:
+        improved = val_metrics["RMSE"] < best_rmse - 1e-5
+        if improved:
             best_rmse = val_metrics["RMSE"]
             epochs_without_improvement = 0
+            console.print(f"[bold green]★ New Best Validation RMSE: {best_rmse:.4f}m (Saved to {best_ckpt_path})[/bold green]")
             torch.save(
                 {
                     "epoch": epoch,
@@ -323,6 +332,7 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False, resume_path: Opt
             )
         else:
             epochs_without_improvement += 1
+            console.print(f"[yellow]No improvement for {epochs_without_improvement}/{patience} epoch(s) (Best: {best_rmse:.4f}m)[/yellow]")
             if not quick_pretrain and epochs_without_improvement >= patience:
                 console.print(
                     f"[bold yellow]Early stopping triggered at epoch {epoch} "
@@ -341,6 +351,8 @@ def main() -> None:
     parser.add_argument("--config", type=str, default="configs/rtx5060_nyuv2.yaml", help="Path to YAML config")
     parser.add_argument("--epochs", type=int, default=None, help="Override number of training epochs")
     parser.add_argument("--batch-size", type=int, default=None, help="Override training batch size")
+    parser.add_argument("--lr", type=float, default=None, help="Override learning rate")
+    parser.add_argument("--patience", type=int, default=None, help="Override early stopping patience")
     parser.add_argument(
         "--resume",
         type=str,
@@ -369,6 +381,16 @@ def main() -> None:
         if "training" not in config:
             config["training"] = {}
         config["training"]["batch_size"] = args.batch_size
+
+    if args.lr is not None:
+        if "training" not in config:
+            config["training"] = {}
+        config["training"]["learning_rate"] = args.lr
+
+    if args.patience is not None:
+        if "training" not in config:
+            config["training"] = {}
+        config["training"]["early_stopping_patience"] = args.patience
 
     train(config, quick_pretrain=args.quick_pretrain, resume_path=args.resume)
 

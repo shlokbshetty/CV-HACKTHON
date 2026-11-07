@@ -164,8 +164,8 @@ def degrade_depth(
     d_gt_valid = d_gt * valid_mask_gt
     sum_depth = F.adaptive_avg_pool2d(d_gt_valid, (h_lr, w_lr))
     sum_weight = F.adaptive_avg_pool2d(valid_mask_gt, (h_lr, w_lr))
-    depth_lr = sum_depth / torch.clamp(sum_weight, min=1e-6)
     valid_mask_lr = (sum_weight > 1e-4).float()
+    depth_lr = (sum_depth / torch.clamp(sum_weight, min=1e-6)) * valid_mask_lr
 
     # If raw sensor depth with real Kinect / LiDAR holes is provided, integrate hardware holes
     if raw_hr is not None:
@@ -173,6 +173,7 @@ def degrade_depth(
         # For sparse LiDAR points (KITTI) or Kinect shadows, max pool preserves existing valid beam hits
         raw_valid_lr = F.adaptive_max_pool2d(raw_valid, (h_lr, w_lr))
         valid_mask_lr = valid_mask_lr * raw_valid_lr
+        depth_lr = depth_lr * valid_mask_lr
 
     # 1. Random sensor dropouts (missing ToF/Kinect pixels)
     if config.hole_ratio > 0.0:

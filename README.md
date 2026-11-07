@@ -104,35 +104,50 @@ uv run streamlit run app.py
 
 ## Benchmark Results (Quantitative Highlights)
 
-Evaluated across **Middlebury (2001–2021)**, **NYU Depth V2**, and **KITTI** across $2\times, 4\times, 8\times$ upsampling scales:
+Evaluated across **Middlebury (2001–2021)**, **NYU Depth V2**, and **KITTI Vision Suite** across $2\times, 4\times, 8\times$ upsampling scales using our trained model checkpoint:
 
 | Dataset | Scale | Method | RMSE (m) ↓ | Boundary RMSE (m) ↓ | PSNR (dB) ↑ | SSIM ↑ | Edge F1 ↑ | Latency (ms) ↓ |
 | :--- | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **NYU Depth V2** | 2× | Bicubic Interp. | 0.3263 | 0.9352 | 24.69 | 0.8933 | 0.5277 | 9.6 ms |
-| | 2× | Mask-Bicubic (Stage 1) | 0.1657 | 0.4823 | 30.79 | 0.9684 | 0.7528 | 37.2 ms |
-| | 2× | **Self-Distilled Hybrid (Stage 2)** | **0.1302** | **0.3694** | **33.05** | **0.9786** | **0.8351** | 109.0 ms |
-| | 4× | Bicubic Interp. | 0.5603 | 1.1786 | 19.85 | 0.8129 | 0.3929 | 11.2 ms |
-| | 4× | Mask-Bicubic (Stage 1) | 0.4470 | 0.8284 | 21.81 | 0.9050 | 0.6159 | 51.0 ms |
-| | 4× | **Self-Distilled Hybrid (Stage 2)** | **0.4037** | **0.6244** | **22.68** | **0.9399** | **0.8127** | 192.5 ms |
-| | 8× | Bicubic Interp. | 0.9697 | 1.5177 | 15.15 | 0.7965 | 0.1483 | 9.7 ms |
-| | 8× | **Self-Distilled Hybrid (Stage 2)** | **0.9031** | **1.3148** | **15.75** | **0.8685** | **0.6637** | 171.8 ms |
-| **Middlebury** | 2× | Bicubic Interp. | 0.3468 | 0.7865 | 25.29 | 0.9195 | 0.3891 | 13.6 ms |
-| | 2× | Mask-Bicubic (Stage 1) | 0.3337 | 0.7410 | 26.37 | 0.9417 | 0.6854 | 50.5 ms |
-| | 2× | **Self-Distilled Hybrid (Stage 2)** | **0.3324** | **0.7344** | **26.56** | **0.9438** | **0.7163** | 142.0 ms |
-| | 4× | Bicubic Interp. | 0.4074 | 0.8784 | 23.44 | 0.9027 | 0.2428 | 13.2 ms |
-| | 4× | Mask-Bicubic (Stage 1) | 0.3928 | 0.8390 | 24.15 | 0.9233 | 0.5145 | 54.0 ms |
-| | 4× | **Self-Distilled Hybrid (Stage 2)** | **0.3899** | **0.8269** | **24.33** | **0.9277** | **0.5833** | 202.7 ms |
-| **KITTI LiDAR** | 2× | Bicubic Interp. | 0.2269 | 0.7613 | 27.49 | 0.9227 | 0.5463 | 7.4 ms |
-| | 2× | Mask-Bicubic (Stage 1) | 0.1084 | 0.3685 | 34.36 | 0.9815 | 0.7794 | 30.4 ms |
-| | 2× | **Self-Distilled Hybrid (Stage 2)** | **0.0777** | **0.2563** | **37.66** | **0.9886** | **0.9154** | 97.4 ms |
-| | 4× | Bicubic Interp. | 0.4386 | 0.9550 | 21.75 | 0.8605 | 0.3794 | 9.2 ms |
-| | 4× | Mask-Bicubic (Stage 1) | 0.3568 | 0.6824 | 23.46 | 0.9348 | 0.6616 | 43.0 ms |
-| | 4× | **Self-Distilled Hybrid (Stage 2)** | **0.3327** | **0.5378** | **24.05** | **0.9616** | **0.9178** | 188.1 ms |
-| | 8× | Bicubic Interp. | 0.6013 | 1.0975 | 19.14 | 0.8440 | 0.1498 | 9.9 ms |
-| | 8× | **Self-Distilled Hybrid (Stage 2)** | **0.4682** | **0.7348** | **21.31** | **0.9306** | **0.8403** | 176.5 ms |
+| **NYU Depth V2** | 2× | Bicubic Interp. | 0.1428 | 0.3631 | 35.69 | 0.9613 | 0.4192 | 6.5 ms |
+| | 2× | Mask-Bicubic (Stage 1) | 0.1216 | 0.3096 | 37.16 | 0.9727 | 0.7078 | 30.2 ms |
+| | 2× | **EG-DepthNet (Deep BF16)** | **0.0896** | **0.2184** | **40.39** | **0.9803** | **0.8536** | 430.0 ms |
+| | 2× | **Self-Distilled Hybrid (Stage 2)** | **0.0912** | **0.2276** | **39.86** | **0.9805** | **0.8288** | **76.2 ms** |
+| | 4× | Bicubic Interp. | 0.2534 | 0.5567 | 30.51 | 0.9339 | 0.2090 | 7.4 ms |
+| | 4× | Mask-Bicubic (Stage 1) | 0.2490 | 0.5379 | 30.64 | 0.9383 | 0.4586 | 28.5 ms |
+| | 4× | **Self-Distilled Hybrid (Stage 2)** | **0.2095** | **0.4503** | **32.37** | **0.9490** | **0.5932** | **111.3 ms** |
+| | 8× | Bicubic Interp. | 0.6058 | 0.8805 | 22.19 | 0.9065 | 0.0596 | 7.9 ms |
+| | 8× | **Self-Distilled Hybrid (Stage 2)** | **0.5893** | **0.7994** | **22.96** | **0.9125** | **0.3087** | **145.2 ms** |
+| **Middlebury** | 2× | Bicubic Interp. | 0.5253 | 1.5067 | 22.56 | 0.8810 | 0.2698 | 7.8 ms |
+| | 2× | Mask-Bicubic (Stage 1) | 0.5249 | 1.5061 | 22.56 | 0.8857 | 0.4741 | 25.5 ms |
+| | 2× | **Self-Distilled Hybrid (Stage 2)** | **0.5259** | **1.5080** | **22.55** | **0.8878** | **0.6057** | **83.4 ms** |
+| | 4× | Bicubic Interp. | 0.5287 | 1.5102 | 22.52 | 0.8795 | 0.1590 | 9.8 ms |
+| | 4× | Mask-Bicubic (Stage 1) | 0.5281 | 1.5101 | 22.53 | 0.8838 | 0.3226 | 27.7 ms |
+| | 4× | **Self-Distilled Hybrid (Stage 2)** | **0.5299** | **1.5153** | **22.50** | **0.8854** | **0.5205** | **112.0 ms** |
+| **KITTI LiDAR** | 2× | Bicubic Interp. | 1.2540 | 2.4383 | 18.05 | 0.8947 | 0.4173 | 5.1 ms |
+| | 2× | Mask-Bicubic (Stage 1) | 1.2519 | 2.4346 | 18.06 | 0.8939 | 0.4751 | 19.9 ms |
+| | 2× | **Self-Distilled Hybrid (Stage 2)** | **1.2274** | **2.3871** | **18.23** | **0.8974** | **0.5573** | **67.8 ms** |
+| | 4× | Bicubic Interp. | 1.3701 | 2.5710 | 17.29 | 0.8641 | 0.1019 | 5.6 ms |
+| | 4× | Mask-Bicubic (Stage 1) | 1.4708 | 2.7499 | 16.66 | 0.8535 | 0.1544 | 23.7 ms |
+| | 4× | **Self-Distilled Hybrid (Stage 2)** | **1.3969** | **2.6388** | **17.11** | **0.8562** | **0.3047** | **100.7 ms** |
 
 Full multi-dataset report: [outputs/benchmark_report.md](outputs/benchmark_report.md)  
 Hackathon Evaluation Submission: [`eval_P4_TeamID.md`](./eval_P4_TeamID.md)
+
+---
+
+## Visual & Qualitative Discontinuity Refinement Showcase
+
+### 1. Training & Convergence History (Loss, Boundary-RMSE, PSNR)
+![Training Curves](outputs/training_curves.png)
+
+### 2. NYU Depth V2 (Indoor Kinect RGB-D Discontinuity Refinement)
+![NYUv2 Qualitative Comparison](outputs/qualitative_nyuv2.png)
+
+### 3. Middlebury Stereo Benchmark (Zero-Shot Sub-Pixel Boundaries)
+![Middlebury Qualitative Comparison](outputs/qualitative_middlebury.png)
+
+### 4. KITTI Vision Suite (Outdoor Sparse-to-Dense LiDAR)
+![KITTI Qualitative Comparison](outputs/qualitative_kitti.png)
 
 ---
 
