@@ -501,11 +501,16 @@ def main() -> None:
 
     rgb_np = rgb_hr.detach().cpu().numpy().transpose(1, 2, 0)
     gt_np = depth_gt[0].detach().cpu().numpy()
+    valid_gt_np = valid_gt[0].detach().cpu().numpy() > 0.5
     lr_np = depth_lr[0].detach().cpu().numpy()
     lr_valid_np = valid_lr[0].detach().cpu().numpy() > 0.5
     boundary_np = boundary_gt[0].detach().cpu().numpy()
 
-    vmin, vmax = float(np.percentile(gt_np, 2)), float(np.percentile(gt_np, 98))
+    valid_gt_vals = gt_np[valid_gt_np]
+    if valid_gt_vals.size > 0:
+        vmin, vmax = float(np.percentile(valid_gt_vals, 2)), float(np.percentile(valid_gt_vals, 98))
+    else:
+        vmin, vmax = float(np.percentile(gt_np, 2)), float(np.percentile(gt_np, 98))
 
     # Top KPI Banner
     best_row = next(r for r in metrics_rows if r["Key"] == "hybrid")
@@ -554,7 +559,7 @@ def main() -> None:
             use_container_width=True,
         )
         c5.image(
-            colorize_depth(gt_np, vmin, vmax, cmap_name=cmap_choice),
+            colorize_depth(gt_np, vmin, vmax, cmap_name=cmap_choice, invalid_mask=~valid_gt_np),
             caption="Ground Truth High-Resolution Target",
             use_container_width=True,
         )
@@ -569,7 +574,7 @@ def main() -> None:
                 use_container_width=True,
             )
         m_cols[5].image(
-            colorize_depth(gt_np, vmin, vmax, cmap_name=cmap_choice),
+            colorize_depth(gt_np, vmin, vmax, cmap_name=cmap_choice, invalid_mask=~valid_gt_np),
             caption="Ground Truth HR\n(Ideal Reference)",
             use_container_width=True,
         )
