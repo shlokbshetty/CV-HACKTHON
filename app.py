@@ -252,58 +252,84 @@ def generate_camera_depth_prior(rgb_np: np.ndarray) -> np.ndarray:
     """
     Generate an intelligent, multi-cue, edge-preserving geometric depth prior for any arbitrary real-world photo.
     Combines:
-    1. Vertical ground-plane perspective gradient (near at bottom, far at top)
-    2. Multi-scale color contrast & high-frequency edge structure
-    3. Foreground object saliency & focus segmentation (Otsu-style discrete plateaus)
-    4. Canny-guided bilateral depth clustering (assigning discrete objects to distinct depth planes)
+    1. Multi-scale color saliency in LAB space + high-frequency focus
+    2. GrabCut / adaptive foreground subject segmentation (creating discrete 3D object layers)
+    3. Ground-plane perspective vanishing gradient (near at bottom, far at top)
+    4. Canny-guided bilateral edge snapping (locking silhouettes to 1-pixel RGB contours)
     Range: [0.8m, 5.0m] (natural human/object scale).
     """
     H, W = rgb_np.shape[:2]
-    gray_u8 = (np.clip(rgb_np, 0.0, 1.0) * 255).astype(np.uint8)
-    gray = cv2.cvtColor(gray_u8, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
+    img_u8 = (np.clip(rgb_np, 0.0, 1.0) * 255.0).astype(np.uint8)
+    gray_u8 = cv2.cvtColor(img_u8, cv2.COLOR_RGB2GRAY)
 
     yy, xx = np.mgrid[0:H, 0:W]
     y_norm = yy.astype(np.float32) / max(H, 1)
     x_norm = xx.astype(np.float32) / max(W, 1)
 
-    # 1. Multi-scale Saliency / Contrast
-    mean_color = rgb_np.mean(axis=(0, 1), keepdims=True)
-    color_diff = np.linalg.norm(rgb_np - mean_color, axis=-1)
-    saliency = cv2.GaussianBlur(color_diff, (25, 25), 0)
+    # 1. Multi-scale Saliency in LAB color space
+    lab = cv2.cvtColor(img_u8, cv2.COLOR_RGB2LAB).astype(np.float32)
+    mean_lab = lab.mean(axis=(0, 1), keepdims=True)
+    color_diff = np.linalg.norm(lab - mean_lab, axis=-1)
+    saliency = cv2.GaussianBlur(color_diff, (21, 21), 0)
     s_norm = (saliency - saliency.min()) / max(float(saliency.max() - saliency.min()), 1e-5)
 
-    # 2. Focus / Sharpness cue (Laplacian local variance)
+    # 2. High-Frequency Focus / Sharpness (Laplacian on 2D grayscale)
     lap = np.abs(cv2.Laplacian(gray_u8, cv2.CV_32F))
-    focus = cv2.GaussianBlur(lap, (31, 31), 0)
+    focus = cv2.GaussianBlur(lap, (25, 25), 0)
     f_norm = (focus - focus.min()) / max(float(focus.max() - focus.min()), 1e-5)
 
-    # 3. Central framing prior (photographers frame foreground subjects near center)
-    center_dist = np.sqrt((x_norm - 0.5) ** 2 + (y_norm - 0.52) ** 2)
-    center_prior = np.clip(1.0 - center_dist / 0.65, 0.0, 1.0)
+    # 3. Central subject framing prior (Gaussian centered at (0.5, 0.52))
+    center_dist_sq = (x_norm - 0.5) ** 2 + ((y_norm - 0.52) * 1.2) ** 2
+    center_prior = np.exp(-center_dist_sq / 0.18).astype(np.float32)
 
-    # 4. Discrete Object Saliency Mask
-    fg_prob = 0.45 * s_norm + 0.35 * f_norm + 0.20 * center_prior
-    fg_thresh = float(np.percentile(fg_prob, 60))
-    fg_mask = np.clip((fg_prob - fg_thresh) / 0.25, 0.0, 1.0)
+    # 4. Foreground probability map
+    fg_prob = (0.40 * s_norm + 0.35 * f_norm + 0.25 * center_prior).astype(np.float32)
 
-    # Base ground depth: 1.2m at bottom to 4.5m at top
-    base_depth = 4.5 - 3.2 * (y_norm ** 0.8)
-    # Foreground object depth: locked to 1.0m - 1.8m
-    fg_depth = 1.0 + 0.8 * y_norm
-    depth_raw = (1.0 - fg_mask) * base_depth + fg_mask * fg_depth
+    # 5. GrabCut Subject Silhouette Segmentation
+    thresh = float(np.percentile(fg_prob, 70))
+    fg_candidate = fg_prob > thresh
+    y_indices, x_indices = np.where(fg_candidate)
 
-    # 5. Joint Bilateral Edge Snapping along high-res RGB edges
-    depth_smooth = cv2.bilateralFilter(depth_raw.astype(np.float32), d=7, sigmaColor=0.25, sigmaSpace=9.0)
+    if len(y_indices) > 50:
+        y_min, y_max = max(0, int(y_indices.min()) - 10), min(H - 1, int(y_indices.max()) + 10)
+        x_min, x_max = max(0, int(x_indices.min()) - 10), min(W - 1, int(x_indices.max()) + 10)
+        if (x_max - x_min > 20) and (y_max - y_min > 20):
+            mask_gc = np.zeros((H, W), np.uint8)
+            mask_gc.fill(cv2.GC_BGD)
+            mask_gc[y_min:y_max, x_min:x_max] = cv2.GC_PR_FGD
+            mask_gc[fg_prob > np.percentile(fg_prob, 85)] = cv2.GC_FGD
+            mask_gc[fg_prob < np.percentile(fg_prob, 25)] = cv2.GC_BGD
+            bgdModel = np.zeros((1, 65), np.float64)
+            fgdModel = np.zeros((1, 65), np.float64)
+            try:
+                cv2.grabCut(img_u8, mask_gc, None, bgdModel, fgdModel, 2, cv2.GC_INIT_WITH_MASK)
+                subject_mask = np.where((mask_gc == cv2.GC_FGD) | (mask_gc == cv2.GC_PR_FGD), 1.0, 0.0).astype(np.float32)
+            except Exception:
+                subject_mask = (fg_prob > thresh).astype(np.float32)
+        else:
+            subject_mask = (fg_prob > thresh).astype(np.float32)
+    else:
+        subject_mask = (fg_prob > thresh).astype(np.float32)
 
-    # Snap along Canny edges of the RGB image so boundaries are 1-pixel sharp
+    subject_mask = cv2.GaussianBlur(subject_mask, (5, 5), 0)
+
+    # 6. Physical Depth Assignment
+    # Background plane: perspective slope from 2.2m at bottom to 4.8m at top
+    bg_depth = 4.8 - 2.6 * (y_norm ** 0.8)
+    # Foreground subject depth: solid planar depth around 1.3m (with slight perspective)
+    fg_depth = 1.25 + 0.35 * y_norm
+    depth_raw = (1.0 - subject_mask) * bg_depth + subject_mask * fg_depth
+
+    # 7. Bilateral Edge Snapping along optical RGB contours
+    depth_smooth = cv2.bilateralFilter(depth_raw.astype(np.float32), d=7, sigmaColor=0.20, sigmaSpace=7.0)
     edges = cv2.Canny(gray_u8, 50, 150) > 0
     d_erode = cv2.erode(depth_smooth, np.ones((3, 3), np.uint8))
     d_dilate = cv2.dilate(depth_smooth, np.ones((3, 3), np.uint8))
     mid = 0.5 * (d_erode + d_dilate)
     target = np.where(depth_smooth <= mid, d_erode, d_dilate)
-    depth_snapped = np.where(edges, target, depth_smooth)
+    depth_final = np.where(edges, target, depth_smooth)
 
-    return np.clip(depth_snapped, 0.8, 5.0).astype(np.float32)
+    return np.clip(depth_final, 0.8, 5.0).astype(np.float32)
 
 
 def main() -> None:
@@ -496,16 +522,16 @@ def main() -> None:
                 if bgr is not None:
                     rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
                     sample_name = Path(rgb_file.name).stem
-            elif "camera_preset" in st.session_state:
+            elif "camera_preset" in st.session_state and st.session_state["camera_preset"] in PRESET_MAP:
                 p_dir = PRESET_MAP[st.session_state["camera_preset"]]
-                rgb_path = next(p_dir.glob("view*.png"), None)
+                rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
                 if rgb_path and rgb_path.exists():
                     bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
                     rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
                     sample_name = p_dir.name
             else:
-                p_dir = PRESET_MAP["Art Studio (Sculpture & Easel)"]
-                rgb_path = next(p_dir.glob("view*.png"), None)
+                p_dir = PRESET_MAP["Art Studio & Easel (artroom1)"]
+                rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
                 if rgb_path and rgb_path.exists():
                     bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
                     rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
@@ -543,13 +569,28 @@ def main() -> None:
 
             if rgb_np is None or depth_np is None:
                 st.warning("Please upload both an RGB image and a Depth map to run paired evaluation. Or click below to load a sample:")
-                if st.button("🖼️ Load Demo Paired Scene (Office Desk)"):
-                    p_dir = PRESET_MAP["Office Desk (Books & Complex Shapes)"]
-                    bgr = cv2.imread(str(next(p_dir.glob("view*.png"))), cv2.IMREAD_COLOR)
-                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                    gray = cv2.imread(str(next(p_dir.glob("disp*.png"))), cv2.IMREAD_GRAYSCALE).astype(np.float32)
-                    depth_np = np.clip(100.0 / np.maximum(gray, 5.0), 0.5, 6.0)
-                    sample_name = "demo_office_desk"
+                if st.button("🖼️ Load Demo Paired Scene (Art Studio)"):
+                    p_dir = PRESET_MAP["Art Studio & Easel (artroom1)"]
+                    rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
+                    disp_path = next(p_dir.glob("disp*.pfm"), None) or next(p_dir.glob("disp*.png"), None)
+                    if rgb_path and rgb_path.exists():
+                        bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
+                        rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                    if disp_path and disp_path.exists():
+                        if disp_path.suffix == ".pfm":
+                            disp_np = MiddleburyDataset(scene_dirs=[])._read_disp(disp_path)
+                            disp_valid = np.nan_to_num(disp_np, nan=0.0, posinf=0.0, neginf=0.0)
+                            depth_np = 100.0 / np.maximum(disp_valid, 5.0)
+                            depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
+                        else:
+                            gray = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
+                            if gray is not None:
+                                if gray.ndim == 3:
+                                    gray = gray[:, :, 0]
+                                disp_valid = np.nan_to_num(gray.astype(np.float32), nan=0.0)
+                                depth_np = 100.0 / np.maximum(disp_valid, 5.0)
+                                depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
+                    sample_name = "demo_art_studio"
 
         if rgb_np is None:
             st.error("No image available. Please upload an RGB photo.")
