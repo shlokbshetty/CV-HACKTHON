@@ -30,8 +30,209 @@ from depth_refine.hybrid.hybrid_pipeline import HybridReconstructor
 
 st.set_page_config(
     page_title="Edge-Preserving Depth Upsampling & Refinement (P4)",
-    page_icon="📐",
+    page_icon=None,
     layout="wide",
+)
+
+st.markdown(
+    """
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+        /* Global Typography & Palette */
+        html, body, [class*="css"] {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+
+        /* Background and Canvas */
+        .stApp {
+            background-color: #0A0B0E;
+            color: #E2E8F0;
+        }
+
+        /* Top App Header */
+        header[data-testid="stHeader"] {
+            background: rgba(10, 11, 14, 0.8) !important;
+            backdrop-filter: blur(20px) !important;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
+        }
+
+        /* Main headings */
+        h1 {
+            font-size: 24px !important;
+            font-weight: 700 !important;
+            letter-spacing: -0.02em !important;
+            color: #FFFFFF !important;
+            margin-bottom: 4px !important;
+        }
+        h2, h3 {
+            font-size: 16px !important;
+            font-weight: 600 !important;
+            letter-spacing: -0.01em !important;
+            color: #F1F5F9 !important;
+        }
+        h4 {
+            font-size: 13.5px !important;
+            font-weight: 600 !important;
+            color: #CBD5E1 !important;
+            margin-top: 18px !important;
+            margin-bottom: 10px !important;
+        }
+
+        /* Sidebar Styling */
+        section[data-testid="stSidebar"] {
+            background-color: #0E1015 !important;
+            border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
+        }
+        section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
+        section[data-testid="stSidebar"] label {
+            font-size: 12px !important;
+            color: #94A3B8 !important;
+            font-weight: 500 !important;
+        }
+        section[data-testid="stSidebar"] h1,
+        section[data-testid="stSidebar"] h2,
+        section[data-testid="stSidebar"] h3 {
+            font-size: 11.5px !important;
+            font-weight: 700 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.08em !important;
+            color: #E2E8F0 !important;
+        }
+
+        /* Top KPI Metric Cards */
+        div[data-testid="stMetric"] {
+            background: #111319 !important;
+            border: 1px solid rgba(255, 255, 255, 0.08) !important;
+            border-radius: 12px !important;
+            padding: 12px 16px !important;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35) !important;
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+        }
+        div[data-testid="stMetric"]:hover {
+            border-color: rgba(59, 130, 246, 0.4) !important;
+            transform: translateY(-1px) !important;
+        }
+        div[data-testid="stMetricLabel"] p {
+            font-size: 11px !important;
+            font-weight: 600 !important;
+            text-transform: uppercase !important;
+            letter-spacing: 0.06em !important;
+            color: #94A3B8 !important;
+        }
+        div[data-testid="stMetricValue"] {
+            font-size: 22px !important;
+            font-weight: 700 !important;
+            color: #FFFFFF !important;
+            font-family: 'JetBrains Mono', monospace !important;
+        }
+        div[data-testid="stMetricDelta"] {
+            font-size: 11.5px !important;
+            font-weight: 600 !important;
+        }
+
+        /* Modern Tabs */
+        .stTabs [data-baseweb="tab-list"] {
+            gap: 6px !important;
+            background-color: rgba(255, 255, 255, 0.03) !important;
+            padding: 5px !important;
+            border-radius: 10px !important;
+            border: 1px solid rgba(255, 255, 255, 0.08) !important;
+            margin-bottom: 20px !important;
+        }
+        .stTabs [data-baseweb="tab"] {
+            height: 38px !important;
+            padding: 0 16px !important;
+            border-radius: 7px !important;
+            color: #94A3B8 !important;
+            font-weight: 500 !important;
+            font-size: 12.5px !important;
+            border: none !important;
+            background-color: transparent !important;
+            transition: all 0.15s ease !important;
+        }
+        .stTabs [data-baseweb="tab"]:hover {
+            color: #F8FAFC !important;
+            background-color: rgba(255, 255, 255, 0.04) !important;
+        }
+        .stTabs [aria-selected="true"] {
+            background-color: rgba(255, 255, 255, 0.09) !important;
+            color: #38BDF8 !important;
+            font-weight: 600 !important;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25) !important;
+        }
+        .stTabs [data-baseweb="tab-highlight"] {
+            display: none !important;
+        }
+
+        /* Image Containers & Captions */
+        [data-testid="stImage"] {
+            border-radius: 10px !important;
+            overflow: hidden !important;
+            border: 1px solid rgba(255, 255, 255, 0.08) !important;
+            background-color: #111319 !important;
+            box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2) !important;
+            transition: border-color 0.15s ease !important;
+        }
+        [data-testid="stImage"]:hover {
+            border-color: rgba(255, 255, 255, 0.18) !important;
+        }
+        [data-testid="stImageCaption"] {
+            font-size: 11px !important;
+            color: #94A3B8 !important;
+            font-weight: 500 !important;
+            text-align: center !important;
+            margin-top: 6px !important;
+            line-height: 1.35 !important;
+        }
+
+        /* Buttons */
+        .stButton button {
+            border-radius: 8px !important;
+            font-size: 12px !important;
+            font-weight: 600 !important;
+            border: 1px solid rgba(255, 255, 255, 0.12) !important;
+            background-color: rgba(255, 255, 255, 0.06) !important;
+            color: #F1F5F9 !important;
+            transition: all 0.15s ease !important;
+        }
+        .stButton button:hover {
+            background-color: rgba(255, 255, 255, 0.12) !important;
+            border-color: rgba(255, 255, 255, 0.25) !important;
+            color: #FFFFFF !important;
+        }
+
+        /* Download Buttons */
+        .stDownloadButton button {
+            border-radius: 8px !important;
+            font-size: 12px !important;
+            font-weight: 600 !important;
+            background: linear-gradient(180deg, #1E293B 0%, #0F172A 100%) !important;
+            border: 1px solid rgba(255, 255, 255, 0.12) !important;
+            color: #F8FAFC !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+            transition: all 0.15s ease !important;
+        }
+        .stDownloadButton button:hover {
+            border-color: #38BDF8 !important;
+            box-shadow: 0 0 16px rgba(56, 189, 248, 0.25) !important;
+            color: #38BDF8 !important;
+        }
+
+        /* Tables */
+        [data-testid="stDataFrame"] {
+            border-radius: 10px !important;
+            overflow: hidden !important;
+            border: 1px solid rgba(255, 255, 255, 0.08) !important;
+        }
+
+        /* Radio and Selectbox */
+        div[role="radiogroup"] {
+            gap: 8px !important;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 
@@ -323,12 +524,8 @@ def generate_camera_depth_prior(rgb_np: np.ndarray) -> np.ndarray:
 
 
 def main() -> None:
-    st.title("📐 Edge-Preserving Depth Map Upsampling & Refinement (ProbID - P4)")
-    st.markdown(
-        "**Architecture**: `EG-DepthNet` (Edge-Gated Cross-Attention + Anisotropic Spatial Propagation) "
-        "+ **Stage-3 Uncertainty-Guided Bilateral Energy Refinement**  \n"
-        "*Benchmarked on NYU Depth V2, Middlebury Stereo (2001–2021), and KITTI Vision Suite.*"
-    )
+    st.title("EG-DepthNet // Benchmark & Reconstruction Studio")
+    st.caption("Edge-Preserving Depth Map Upsampling & Refinement (ProbID: P4) • Self-Distilled Hybrid Tensor Engine")
 
     ckpt_path = Path("checkpoints/eg_depthnet_best.pt")
     ckpt_mtime = ckpt_path.stat().st_mtime if ckpt_path.exists() else 0.0
@@ -336,7 +533,7 @@ def main() -> None:
     device = engine.device
 
     # --- Sidebar Controls ---
-    st.sidebar.header("⚙️ Sensor & Reconstruction Controls")
+    st.sidebar.markdown("### SENSOR & RECONSTRUCTION")
     dataset_choice = st.sidebar.selectbox(
         "Dataset / Source",
         options=["nyuv2", "middlebury", "kitti", "synthetic", "custom_upload"],
@@ -345,7 +542,7 @@ def main() -> None:
             "middlebury": "Middlebury Stereo (2001–2021)",
             "kitti": "KITTI Vision Suite (Outdoor LiDAR)",
             "synthetic": "3D Texture-Copy Stress Scene",
-            "custom_upload": "🛰️ Upload Sensor RGB-D Capture (LiDAR / RealSense)",
+            "custom_upload": "Upload Sensor RGB-D Capture (LiDAR / RealSense)",
         }[x],
     )
 
@@ -374,9 +571,9 @@ def main() -> None:
         options=["linear", "disparity", "log"],
         index=0,
         format_func=lambda x: {
-            "linear": "📏 Metric Depth (Continuous Physical Distance)",
-            "disparity": "✨ Perceptual Disparity (Inverse Depth 1/d)",
-            "log": "📐 Logarithmic Depth",
+            "linear": "Metric Depth (Continuous Physical Distance)",
+            "disparity": "Perceptual Disparity (Inverse Depth 1/d)",
+            "log": "Logarithmic Depth",
         }[x],
         help="Metric Depth colorizes physical distance in meters (blue=near, yellow/red=far). Perceptual Disparity inverts depth.",
     )
@@ -396,7 +593,7 @@ def main() -> None:
     )
 
     st.sidebar.markdown("---")
-    st.sidebar.subheader("⚡ Quantization & Acceleration")
+    st.sidebar.markdown("### QUANTIZATION & ACCELERATION")
     quant_precision = st.sidebar.selectbox(
         "Inference Precision / Quantization",
         options=["bf16", "int8", "fp16", "fp32"],
@@ -415,7 +612,7 @@ def main() -> None:
         f"**INT8 Quantized**: `{q_stats.compressed_size_mb:.2f} MB` (**{q_stats.compression_ratio:.2f}× smaller**)"
     )
 
-    if st.sidebar.button("🔄 Reload Latest Weights Cache"):
+    if st.sidebar.button("Reload Latest Weights Cache", use_container_width=True):
         st.cache_resource.clear()
         st.rerun()
 
@@ -429,13 +626,13 @@ def main() -> None:
     )
 
     if dataset_choice == "custom_upload":
-        st.markdown("### 🛰️ Hardware Sensor RGB-D Testing Studio")
+        st.markdown("### Hardware Sensor RGB-D Testing Studio")
         st.markdown(
             "Evaluate **EG-DepthNet + Hybrid Reconstructor** on genuine captures from physical depth-sensing hardware "
             "(LiDAR scanners, Time-of-Flight sensors, stereo depth cameras, or synthetic simulators)."
         )
 
-        with st.expander("ℹ️ How to obtain genuine RGB-D captures for this model", expanded=False):
+        with st.expander("How to obtain genuine RGB-D captures for this model", expanded=False):
             st.markdown(
                 """
                 - **iPhone Pro / iPad Pro with LiDAR**: Use free iOS apps like **3D Scanner App**, **Record3D**, or **Polycam**. Export both the **Color Photo** (`.png`/`.jpg`) and the **16-bit Millimeter Depth Map** (`.png`).
@@ -452,9 +649,9 @@ def main() -> None:
             "Select Sensor / Image Input Mode",
             options=["photo_only", "paired_rgbd", "preset_samples"],
             format_func=lambda x: {
-                "photo_only": "📷 Upload Any Phone / Camera Photo (Automatic 3D Depth + Edge Refinement)",
-                "paired_rgbd": "🛰️ Upload Paired Sensor Capture (Color Image + Real Depth Map)",
-                "preset_samples": "🎯 1-Click Calibrated Hardware Demos (Middlebury Structured Light & Stereo)",
+                "photo_only": "Upload Any Phone / Camera Photo (Automatic 3D Depth + Edge Refinement)",
+                "paired_rgbd": "Upload Paired Sensor Capture (Color Image + Real Depth Map)",
+                "preset_samples": "1-Click Calibrated Hardware Demos (Middlebury Structured Light & Stereo)",
             }[x],
             horizontal=True,
         )
@@ -479,7 +676,7 @@ def main() -> None:
         }
 
         if upload_mode == "photo_only":
-            st.info("💡 **Single Photo Mode**: Upload any photo from your phone or camera. The application automatically generates an edge-preserving geometric depth map, simulates sensor decimation & holes, and uses **EG-DepthNet** to reconstruct razor-sharp 3D boundaries!")
+            st.info("**Single Photo Mode**: Upload any photo from your phone or camera. The application automatically generates an edge-preserving geometric depth map, simulates sensor decimation & holes, and uses **EG-DepthNet** to reconstruct razor-sharp 3D boundaries!")
             rgb_file = st.file_uploader(
                 "Upload Camera Photo (.jpg, .png, .jpeg, .webp)",
                 type=["png", "jpg", "jpeg", "webp"],
@@ -492,7 +689,7 @@ def main() -> None:
                     rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
                     sample_name = Path(rgb_file.name).stem
             else:
-                st.caption("ℹ️ *Awaiting your photo upload. Displaying sample 'Art Studio' scene below:*")
+                st.caption("Awaiting your photo upload. Displaying sample 'Art Studio' scene below:")
                 p_dir = PRESET_MAP["Art Studio & Easel (artroom1)"]
                 rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
                 if rgb_path and rgb_path.exists():
@@ -525,7 +722,7 @@ def main() -> None:
             sample_name = p_dir.name
 
         elif upload_mode == "paired_rgbd":
-            st.info("💡 **Paired RGB-D Input**: Upload both the RGB guidance image and its aligned depth map from any depth-recording device or simulator.")
+            st.info("**Paired RGB-D Input**: Upload both the RGB guidance image and its aligned depth map from any depth-recording device or simulator.")
             p_col1, p_col2 = st.columns(2)
             with p_col1:
                 rgb_file = st.file_uploader("Upload High-Res Color Image (.png, .jpg, .jpeg, .webp)", type=["png", "jpg", "jpeg", "webp"], key="paired_rgb")
@@ -566,7 +763,7 @@ def main() -> None:
 
             # Fallback to Demo Scene if files haven't been uploaded yet so the page never errors
             if rgb_np is None or depth_np is None:
-                st.caption("ℹ️ *Awaiting custom sensor files. Displaying real-world structured-light benchmark pair below:*")
+                st.caption("Awaiting custom sensor files. Displaying real-world structured-light benchmark pair below:")
                 p_dir = PRESET_MAP["Art Studio & Easel (artroom1)"]
                 rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
                 disp_path = next(p_dir.glob("disp*.pfm"), None) or next(p_dir.glob("disp*.png"), None)
@@ -723,10 +920,10 @@ def main() -> None:
 
     tab1, tab2, tab3, tab4 = st.tabs(
         [
-            "🖼️ Visual Reconstruction Studio",
-            "🔍 Boundary & Discontinuity Inspector",
-            "🌐 Interactive 3D Point Cloud",
-            "📊 Quantitative Benchmark Leaderboard",
+            "Visual Reconstruction Studio",
+            "Boundary & Discontinuity Inspector",
+            "Interactive 3D Point Cloud",
+            "Quantitative Benchmark Leaderboard",
         ]
     )
 
@@ -933,10 +1130,10 @@ def main() -> None:
                 "3D Display Layout",
                 options=["side_by_side", "hero_hybrid", "hero_bicubic", "hero_gt"],
                 format_func=lambda x: {
-                    "side_by_side": "📊 3-Way Side-by-Side (Bicubic vs. Hybrid vs. Target)",
-                    "hero_hybrid": "🚀 Hero Focus: Hybrid EG-DepthNet (Full View)",
-                    "hero_bicubic": "🔎 Hero Focus: Bicubic Baseline (Inspect Flying Pixels)",
-                    "hero_gt": "🎯 Hero Focus: Ground Truth Target (Ideal Geometry)",
+                    "side_by_side": "3-Way Side-by-Side (Bicubic vs. Hybrid vs. Target)",
+                    "hero_hybrid": "Hero Focus: Hybrid EG-DepthNet (Full View)",
+                    "hero_bicubic": "Hero Focus: Bicubic Baseline (Inspect Flying Pixels)",
+                    "hero_gt": "Hero Focus: Ground Truth Target (Ideal Geometry)",
                 }[x],
                 horizontal=False,
             )
@@ -945,9 +1142,9 @@ def main() -> None:
                 "Point Cloud Color Palette",
                 options=["rgb", "depth", "discontinuity"],
                 format_func=lambda x: {
-                    "rgb": "🎨 Realistic RGB Camera Texture",
-                    "depth": "🌈 Turbo Depth Colormap (Metric Z)",
-                    "discontinuity": "🚨 Edge & Flying Pixels Spotlight (Red Edges)",
+                    "rgb": "Realistic RGB Camera Texture",
+                    "depth": "Turbo Depth Colormap (Metric Z)",
+                    "discontinuity": "Edge & Flying Pixels Spotlight (Red Edges)",
                 }[x],
             )
             filter_sky = st.checkbox(
@@ -1115,12 +1312,12 @@ def main() -> None:
 
     # --- Export Reconstructed Depth Map ---
     st.markdown("---")
-    st.markdown("### 💾 Export Reconstructed Depth Map")
+    st.markdown("### Export Reconstructed Depth Map")
     exp_col1, exp_col2 = st.columns(2)
     depth_mm = (preds["hybrid"] * 1000.0).clip(0, 65535).astype(np.uint16)
     _, png_buf = cv2.imencode(".png", depth_mm)
     exp_col1.download_button(
-        "📥 Download High-Res Depth (16-bit PNG, Millimeters)",
+        "Download High-Res Depth (16-bit PNG, Millimeters)",
         data=png_buf.tobytes(),
         file_name=f"{sample['name']}_hybrid_depth_16bit.png",
         mime="image/png",
@@ -1130,7 +1327,7 @@ def main() -> None:
     npy_buf = io.BytesIO()
     np.save(npy_buf, preds["hybrid"].astype(np.float32))
     exp_col2.download_button(
-        "📥 Download Depth Map as Numpy Array (.npy)",
+        "Download Depth Map as Numpy Array (.npy)",
         data=npy_buf.getvalue(),
         file_name=f"{sample['name']}_hybrid_depth.npy",
         mime="application/octet-stream",
