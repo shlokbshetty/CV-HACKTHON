@@ -1,5 +1,6 @@
 # Edge-Preserving Depth Upsampling & Refinement Benchmark Report (ProbID: P4)
 
+**Team**: Genesis (Team ID: `T14`)  
 **Repository**: [https://github.com/shlokbshetty/Depth-lab](https://github.com/shlokbshetty/Depth-lab)  
 **Evaluation Protocol**: Multi-scale ($2\times, 4\times, 8\times$) evaluation across NYU Depth V2 (held-out indoor test split), Middlebury Stereo (zero-shot sub-pixel discontinuities), and KITTI Vision Suite (zero-shot outdoor sparse LiDAR).
 

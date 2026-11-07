@@ -8,7 +8,8 @@
 | Field | Details |
 | :--- | :--- |
 | **Problem ID** | `P4` — Edge-Preserving Depth Map Upsampling and Refinement |
-| **Team ID** | `TeamID` *(Replace with official Team ID)* |
+| **Team ID** | `T14` |
+| **Team Name** | `Genesis` |
 | **Member 1 (Name & USN)** | `Shlok Shetty — 1RUA24CSE0433` |
 | **Member 2 (Name & USN)** | `Shree Santosh Yadav — 1RUA24CSE0436` |
 | **Member 3 (Name & USN)** | `Shiveshwar Sanjay Magadum — 1RUA24CSE0432` |

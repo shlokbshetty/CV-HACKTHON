@@ -1,4 +1,5 @@
  # Edge-Preserving Depth Map Upsampling and Refinement (ProbID - P4)
+**Team Genesis (Team ID: T14)**
 
 An intelligent, edge-aware depth reconstruction and super-resolution framework built for **Problem Statement 4 (ProbID - P4)**. Transforms sparse, noisy, or low-resolution depth maps ($2\times, 4\times, 8\times$) into dense, high-resolution depth representations while sharply preserving geometric object boundaries and suppressing RGB texture-copying artifacts.
 
@@ -104,7 +105,7 @@ uv run streamlit run app.py
   ```
 - **Hackathon Submission Reports**:
   - [`Hackathon_Technical_Solution_Report.md`](./Hackathon_Technical_Solution_Report.md): Official Hackathon Technical Solution Report with problem formulation, classical/deep/hybrid design, cross-dataset benchmarks, ablation study, failure modes, and Next-Gen frontend guide.
-  - [`eval_P4_TeamID.md`](./eval_P4_TeamID.md): Technical deep-dive evaluation report.
+  - [`eval_P4_T14.md`](./eval_P4_T14.md) ([`eval_P4_TeamID.md`](./eval_P4_TeamID.md)): Technical deep-dive evaluation report.
 
 ---
 
@@ -142,7 +143,7 @@ Evaluated across **Middlebury (2001–2021)**, **NYU Depth V2**, and **KITTI Vis
 | | 8× | **Self-Distilled Hybrid (Stage 2)** | **3.4010** | **4.4630** | **9.37** | **0.4312** | **0.3278** | **110.0 ms** |
 
 Full multi-dataset report: [outputs/benchmark_report.md](outputs/benchmark_report.md)  
-Hackathon Evaluation Submission: [`eval_P4_TeamID.md`](./eval_P4_TeamID.md)
+Hackathon Evaluation Submission: [`eval_P4_T14.md`](./eval_P4_T14.md) ([`eval_P4_TeamID.md`](./eval_P4_TeamID.md))
 
 ---
 

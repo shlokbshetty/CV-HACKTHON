@@ -4,7 +4,8 @@
 | :--- | :--- |
 | **Problem ID** | `P4` (Computer Vision / Sensor Processing) |
 | **Problem Title** | Edge-Preserving Depth Map Upsampling and Refinement via Edge-Gated Cross-Attention & Bilateral Mode Energy Minimization |
-| **Team Name** | DepthLab (`TeamID`) |
+| **Team ID** | `T14` |
+| **Team Name** | Genesis (`T14`) |
 | **Team Members** | Shlok Shetty — `1RUA24CSE0433`<br>Shree Santosh Yadav — `1RUA24CSE0436`<br>Shiveshwar Sanjay Magadum — `1RUA24CSE0432`<br>Siddharth S Gadekar — `1RUA24CSE0456`<br>Shashank Tandan — `1RUA24CSE0425` |
 | **GitHub Repository** | [https://github.com/shlokbshetty/Depth-lab](https://github.com/shlokbshetty/Depth-lab) *(Evaluated Commit: `7b590be`)* |
 | **Live Demo / Deployment** | **Next-Gen Web Studio (React 18 + Three.js + Vite)**: `http://localhost:5173`<br>**Streamlit Studio Dashboard**: `http://localhost:8501` / Streamlit Community Cloud<br>**Docker Container**: `docker run -p 8501:8501 depth-refine-p4` |
