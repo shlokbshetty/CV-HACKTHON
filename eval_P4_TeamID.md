@@ -19,58 +19,65 @@
 
 ## 2. System Architecture & Deep-Module Design Document
 
-### 2.1 High-Level Architecture Diagram
+### 2.1 High-Level Architecture Diagram (PatchRefiner + LoftUp Two-Stage Hybrid)
 
 ```mermaid
 flowchart TD
-    subgraph InputStage["Sensor Input & Pre-Conditioning (Stage 1)"]
+    subgraph Stage1["Stage 1: Classical Conditioning & Mask-Bicubic"]
         LR["Low-Res / Sparse / Noisy Depth D_lr\n(2x, 4x, 8x + Missing Holes)"]
         RGB["High-Res RGB Guidance I_hr"]
-        OUTLIER["Statistical Outlier Spike Filter\n(3x3 Neighborhood Consensus)"]
+        OUTLIER["2-Pass Valid-Only Order-Statistic Median\n+ MAD Z-Score Outlier Filter"]
         PYR["Multi-Scale Coarse-to-Fine Pyramid\n& Cross-Bilateral Hole Inpainting"]
-        LR --> OUTLIER --> PYR
+        MB["Mask-Bicubic Upsampler D_Mask-Bicubic (Stage 1)"]
+        LR --> OUTLIER --> PYR --> MB
+        RGB --> MB
     end
 
-    subgraph DeepStage["EG-DepthNet Deep Reconstruction (Stage 2)"]
-        MODE["Foreground/Background Bilateral Mode Basis\n(Separates d_fg & d_bg Prototypes)"]
+    subgraph Stage2["Stage 2: EG-DepthNet (LoftUp + PatchRefiner)"]
+        PRIOR["Foundation Structural Prior Adapter\n(LWLS Metric Scale-Shift Aligned)"]
+        COORD["Continuous 2D Fourier Coordinate\nCross-Attention Upsampler (LoftUp)"]
         STEM["Sparsity-Aware Partial Conv Stem"]
-        RGB_PYR["Multi-Scale RGB Feature Pyramid"]
-        EGCA["Edge-Gated Cross-Attention (EGCA)\nCoherence Gate G_edge in [0, 1]"]
+        EGCA["Edge-Gated Cross-Attention (EGCA)\nAnti-Texture-Copy Gate G_edge in [0, 1]"]
         ASPN["Anisotropic Spatial Propagation (ASPN)\n8-Neighbor Convex Affinity Refinement"]
         UNC["Aleatoric Uncertainty Head (sigma_D)"]
-        PYR & RGB --> MODE --> STEM
-        RGB --> RGB_PYR
-        STEM & RGB_PYR --> EGCA --> ASPN
+        MB & RGB --> STEM
+        RGB --> PRIOR
+        STEM & RGB --> COORD --> EGCA
+        PRIOR & EGCA --> ASPN
         EGCA --> UNC
     end
 
-    subgraph HybridStage["Uncertainty-Guided Bilateral Energy Refinement (Stage 3)"]
-        BP["Interior Sensor-Consistency Back-Projection\n(Weighted by 1 / (1 + sigma_D))"]
-        TRILAT["Sub-Pixel Trilateral Boundary Polish\n& Texture-Suppressed Planar Smoothing"]
+    subgraph Stage3["Stage 2 Refinement: Self-Distilled Hybrid & Boundary Lock"]
+        BLAD["3-Step Boundary-Locked Anisotropic Diffusion\n(Restricted to Dilated Discontinuity Band)"]
+        BP["2-Step Iterative Back-Projection (IBP)\nSensor Consistency Anchor"]
         FINAL["Final High-Resolution Depth D_hybrid"]
-        ASPN & UNC & PYR --> BP --> TRILAT --> FINAL
+        ASPN & UNC & MB --> BLAD --> BP --> FINAL
     end
 ```
 
 ### 2.2 Technical Design & Mathematical Formulation
 
-1. **Multi-Scale Coarse-to-Fine Pyramid Hole Filling (Stage 1)**:
-   - Raw RGB-D sensors (Microsoft Kinect in NYUv2) and LiDAR scanners (Velodyne in KITTI) suffer from structured infrared shadows along object boundaries and missing pockets on specular/dark surfaces.
-   - Simple fixed-window interpolation collapses to flat median blobs inside wide holes. Our Stage-1 module (`_pyramid_fill_holes_lr` & `fill_depth_holes`) constructs a 5-level spatial pyramid ($\{1/16, 1/8, 1/4, 1/2, 1\}$), propagating valid boundary measurements across holes of arbitrary width followed by harmonic Laplace smoothing and RGB cross-bilateral refinement.
+1. **2-Pass Valid-Only Order-Statistic Median + MAD Outlier Filter & Pyramid Hole Filling (Stage 1)**:
+   - Raw RGB-D sensors (Microsoft Kinect in NYUv2) and LiDAR scanners (Velodyne in KITTI) suffer from structured infrared shadows along object boundaries, missing pockets on specular/dark surfaces, and multipath outlier spikes.
+   - `remove_depth_outliers` executes a 2-pass exact $5\times 5$ valid-masked order-statistic median and Median Absolute Deviation (`1.4826 * MAD`) filter to reject clustered outlier spikes before `fill_depth_holes` constructs a 5-level spatial pyramid ($\{1/16, 1/8, 1/4, 1/2, 1\}$) with harmonic Laplace smoothing and RGB cross-bilateral refinement.
 
-2. **Foreground/Background Bilateral Mode Snapping (`bilateral_mode_snap_and_denoise`)**:
+2. **Mask-Bicubic Upsampling (Stage 1 — `MaskBicubicUpsampler`)**:
    - Standard interpolation (`Bicubic`) and Gaussian filtering (`JBF`) blur across occlusion jumps, creating intermediate "flying pixels" in 3D space.
-   - Within a scale-adaptive $(2s+3)\times(2s+3)$ neighborhood around each pixel, we partition local depth samples into a **Foreground Mode** ($D < D_{\text{mid}}$) and **Background Mode** ($D \ge D_{\text{mid}}$), compute their local RGB color prototypes $(\mathbf{c}_{fg}, \mathbf{c}_{bg})$, and assign each high-resolution pixel $p$ to the depth mode whose color prototype best matches $I_{hr}(p)$:
-     $$w_{fg}(p) = \sigma\!\left(\frac{\|I_{hr}(p) - \mathbf{c}_{bg}\|^2 - \|I_{hr}(p) - \mathbf{c}_{fg}\|^2}{2\tau_c^2}\right), \quad D_{\text{snap}}(p) = w_{fg}(p) d_{fg}(p) + (1 - w_{fg}(p)) d_{bg}(p)$$
+   - `MaskBicubicUpsampler` blends bicubic spatial weights $w_{\text{bicubic}}(p,q)$ with foreground/background partition masks $\mathbb{I}(M(p) == M(q))$ and RGB edge-stopping weights $w_{\text{edge}}(I_p, I_q)$:
+     $$D_{\text{Mask-Bicubic}}(p) = \frac{\sum_{q \in \mathcal{N}(p)} w_{\text{bicubic}}(p,q) \cdot \mathbb{I}(M(p) == M(q)) \cdot w_{\text{edge}}(I_p, I_q) \cdot D_{LR}(q)}{\sum_{q \in \mathcal{N}(p)} w_{\text{bicubic}}(p,q) \cdot \mathbb{I}(M(p) == M(q)) \cdot w_{\text{edge}}(I_p, I_q)}$$
 
-3. **Edge-Gated Cross-Attention (EGCA) for Texture-Copy Suppression (Stage 2)**:
-   - High-contrast 2D RGB textures (wallpaper patterns, posters, floor tiles) on geometrically flat surfaces cause conventional guided filters and ungated CNNs to hallucinate false depth ripples (*texture copying*).
-   - `EG-DepthNet` computes a physical + learned **Coherence Gate** $G_{\text{edge}} \in [0, 1]$ from the ratio of local 3D depth span to depth magnitude. Where the 3D surface is planar ($\text{span} \ll \tau_d$), $G_{\text{edge}} \to 0$ suppresses RGB feature injection, reducing spurious planar gradient errors by **34%–52%** compared to ungated guidance.
+3. **Continuous Coordinate Cross-Attention (LoftUp) & Foundation Structural Prior (PatchRefiner)**:
+   - `ContinuousCoordCrossAttentionUpsampler` encodes continuous sub-pixel relative offsets $(\delta_x, \delta_y)$ with 2D sinusoidal Fourier features so HR RGB queries attend over $3\times 3$ LR depth feature neighborhoods across $2\times, 4\times, 8\times$ scales without deconvolution checkerboard artifacts.
+   - `FoundationStructuralPriorAdapter` extracts dense relative geometry from RGB and aligns it to metric `LR GT` depth via **Locally Weighted Least-Squares (LWLS)** scale-shift alignment ($\hat{D}_{\text{prior}}(p) = a(p) P_{\text{rel}}(p) + b(p)$).
 
-4. **Composite Geometry-Aware Loss (`GeometryAwareDepthLoss`)**:
-   $$\mathcal{L}_{\text{total}} = \lambda_1 \mathcal{L}_{\text{Charbonnier}}^{\text{boundary-3}\times} + \lambda_2 \mathcal{L}_{\text{Grad}}^{(1\times, 2\times, 4\times)} + \lambda_3 \mathcal{L}_{\text{Normal}} + \lambda_4 \mathcal{L}_{\text{PlanarSmooth}} + \lambda_5 \mathcal{L}_{\text{Uncertainty}}$$
+4. **Edge-Gated Cross-Attention (EGCA) for Texture-Copy Suppression**:
+   - `EG-DepthNet` computes a physical + learned **Coherence Gate** $G_{\text{edge}} \in [0, 1]$ from the ratio of local 3D depth span to depth magnitude. Where the 3D surface is planar ($\text{span} \ll \tau_d$), $G_{\text{edge}} \to 0$ suppresses RGB feature injection, preventing wallpaper/checkerboard texture copying.
 
-5. **INT8 Per-Channel Weight Quantization & BF16 Tensor-Core Acceleration (`optimization.py`)**:
+5. **Detail & Scale Disentangling (DSD) + Self-Distillation Loss (`GeometryAwareDepthLoss`)**:
+   $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{Charbonnier}}(D, D_{GT}) + \lambda_{\text{grad}} \mathcal{L}_{\text{grad-log}}(\nabla D, \nabla D_{GT}) + \lambda_{\text{rank}} \mathcal{L}_{\text{edge-ranking}} + \lambda_{\text{distill}} \mathcal{L}_{\text{affinity}}(F_{\text{student}}, F_{\text{teacher}})$$
+
+6. **Depth Boundary Error ($\varepsilon^{\text{acc}}_{\text{DBE}}$ & $\varepsilon^{\text{comp}}_{\text{DBE}}$) & INT8 Quantization**:
+   - Evaluates Truncated Chamfer Distance via Euclidean Distance Transform (`cv2.distanceTransform`) between predicted and ground-truth depth discontinuity edges (`compute_dbe_metrics`).
    - Compresses `Conv2d` weights from FP32 (`5.31 MB`) to symmetric per-channel INT8 (`1.34 MB`, **3.96× compression ratio**) with `< 0.002 m` RMSE difference.
 
 ---
