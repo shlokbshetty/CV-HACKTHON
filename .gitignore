@@ -6,13 +6,7 @@ frontend/node_modules/
 pnpm-lock.yaml
 pnpm-workspace.yaml
 
-# Build Outputs
-dist/
-build/
-frontend/dist/
-web/
-
-# Assets & Specs
+# Specs and root samples
 docs/
 /docs/
 samples/
@@ -24,18 +18,37 @@ specs/
 .agent/
 .agents/
 *.webp
+
+# Generated Mock Assets
 frontend/public/assets/hero/
 frontend/public/assets/samples/
 frontend/public/assets/benchmark/
 frontend/public/fonts/
+
+# Production build outputs
+dist/
+build/
+frontend/dist/
+web/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# Python / ML Training / System
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
 .data/*
+data/
 /data/
+checkpoints/
 /checkpoints/
+outputs/
 /outputs/
 *.pt
 *.pth
@@ -43,23 +56,10 @@ __pycache__/
 *.mat
 *.zip
 *.egg-info/
-dist/
-build/
+*.log
+
+# OS metadata & local editor
 .DS_Store
-.venv/
-__pycache__/
-*.py[cod]
-*$py.class
-.pytest_cache/
-/data/
-/checkpoints/
-/outputs/
-*.pt
-*.pth
-*.npz
-*.mat
-*.zip
-*.egg-info/
-dist/
-build/
-.DS_Store
+Thumbs.db
+.idea/
+.vscode/
