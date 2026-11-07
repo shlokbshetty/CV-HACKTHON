@@ -50,10 +50,14 @@ def colorize_depth(
     mode: str = "linear",
     overlay_edges: bool = False,
     rgb_guidance: np.ndarray | None = None,
+    near_is_warm: bool = True,
 ) -> np.ndarray:
-    """Convert a 2D depth or error array into an RGB uint8 visualization with perceptual contrast."""
+    """
+    Convert a 2D depth or error array into an RGB uint8 visualization.
+    When `near_is_warm=True` (default for depth maps), closer objects (smaller metric depth)
+    are rendered in Warm/Orange/Red tones and farther objects in Cool/Blue tones.
+    """
     if mode == "disparity":
-        # Disparity / Inverse Depth (1 / d) gives dramatic foreground contrast like in research papers
         d_safe = np.maximum(depth, 0.05)
         disp = 1.0 / d_safe
         if invalid_mask is not None:
@@ -63,6 +67,8 @@ def colorize_depth(
         disp_min = float(np.percentile(disp_valid, 2)) if disp_valid.size > 0 else float(disp.min())
         disp_max = float(np.percentile(disp_valid, 98)) if disp_valid.size > 0 else float(disp.max())
         norm = np.clip((disp - disp_min) / max(disp_max - disp_min, 1e-6), 0.0, 1.0)
+        if not near_is_warm:
+            norm = 1.0 - norm
     elif mode == "log":
         d_safe = np.maximum(depth, 0.05)
         log_d = np.log(d_safe)
@@ -72,7 +78,9 @@ def colorize_depth(
             l_valid = log_d[depth > 0.05]
         l_min = float(np.percentile(l_valid, 2)) if l_valid.size > 0 else float(log_d.min())
         l_max = float(np.percentile(l_valid, 98)) if l_valid.size > 0 else float(log_d.max())
-        norm = 1.0 - np.clip((log_d - l_min) / max(l_max - l_min, 1e-6), 0.0, 1.0)
+        norm = np.clip((log_d - l_min) / max(l_max - l_min, 1e-6), 0.0, 1.0)
+        if near_is_warm:
+            norm = 1.0 - norm
     else:  # Linear metric depth
         if vmin is None or vmax is None:
             valid = depth[(depth > 0.05) & np.isfinite(depth)]
@@ -83,6 +91,8 @@ def colorize_depth(
         else:
             v_min, v_max = vmin, vmax
         norm = np.clip((depth - v_min) / max(v_max - v_min, 1e-6), 0.0, 1.0)
+        if near_is_warm:
+            norm = 1.0 - norm
 
     try:
         cmap = mpl.colormaps[cmap_name]
@@ -180,11 +190,11 @@ def build_3d_point_cloud_figure(
     else:
         valid_subset = np.ones(len(z_val), dtype=bool)
 
-    # Color mapping
+    # Color mapping (Warm/Orange = Closer, Cool/Blue = Farther)
     if color_mode == "depth":
         vmin = float(z_val.min()) if z_val.size > 0 else 0.5
         vmax = float(z_val.max()) if z_val.size > 0 else 5.0
-        norm_z = np.clip((z_val - vmin) / max(vmax - vmin, 1e-6), 0.0, 1.0)
+        norm_z = 1.0 - np.clip((z_val - vmin) / max(vmax - vmin, 1e-6), 0.0, 1.0)
         cmap = mpl.colormaps["turbo"]
         mapped_rgba = (cmap(norm_z)[:, :3] * 255).astype(int)
         colors_str = [f"rgb({r},{g},{b})" for r, g, b in mapped_rgba]
@@ -625,7 +635,7 @@ def main() -> None:
     metrics_rows = []
 
     for m in ALL_METHODS:
-        if m in ("nearest", "bilinear", "bicubic", "guided", "jbf"):
+        if m in ("nearest", "bilinear", "bicubic", "mask_bicubic", "guided", "jbf"):
             out_t, lat_ms, mem_mb = measure_runtime_and_memory(
                 lambda m_name=m: reconstruct_classical(
                     depth_lr, rgb_hr, scale=scale, method=m_name, valid_mask_lr=valid_lr  # type: ignore[arg-type]
@@ -666,6 +676,16 @@ def main() -> None:
             out_t = res_obj.depth_hybrid
             edge_gate_np = res_obj.edge_gate[0].detach().cpu().numpy()
             uncertainty_np = res_obj.uncertainty[0].detach().cpu().numpy()
+            depth_prior_np = (
+                res_obj.depth_prior[0].detach().cpu().numpy()
+                if res_obj.depth_prior is not None
+                else out_t[0].detach().cpu().numpy()
+            )
+            feature_vis_np = (
+                res_obj.feature_vis[0].detach().cpu().numpy()
+                if res_obj.feature_vis is not None
+                else edge_gate_np
+            )
 
         preds[m] = out_t[0].detach().cpu().numpy()
         m_dict = compute_depth_metrics(out_t, depth_gt, valid_gt, boundary_gt, rgb_hr)
@@ -712,37 +732,64 @@ def main() -> None:
 
     with tab1:
         st.subheader(f"Scene `{sample['name']}` — {scale}× Depth Upsampling & Refinement")
+        st.markdown("#### Panel 1 — The 'PatchRefiner / ProbID-P4' 5-View Reference Showcase")
         c1, c2, c3, c4, c5 = st.columns(5)
-        c1.image((rgb_np * 255).astype(np.uint8), caption="High-Res RGB Guidance", use_container_width=True)
+        c1.image((rgb_np * 255).astype(np.uint8), caption="Input RGB Image", use_container_width=True)
+        c2.image(
+            colorize_depth(depth_prior_np, vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption="Depth Anything / Structural Prior (LWLS Aligned)",
+            use_container_width=True,
+        )
         lr_up_vis = cv2.resize(
             colorize_depth(lr_np, vmin, vmax, cmap_name=cmap_choice, invalid_mask=~lr_valid_np, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
             (gt_np.shape[1], gt_np.shape[0]),
             interpolation=cv2.INTER_NEAREST,
         )
-        c2.image(
-            lr_up_vis,
-            caption=f"Degraded LR Input ({lr_np.shape[1]}×{lr_np.shape[0]}, Holes & Noise)",
-            use_container_width=True,
-        )
         c3.image(
-            colorize_depth(preds["bicubic"], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
-            caption=f"Bicubic Baseline (RMSE: {bic_row['RMSE']:.4f}m)",
+            lr_up_vis,
+            caption=f"LR GT / Sensor Input ({lr_np.shape[1]}×{lr_np.shape[0]}, Holes & Noise)",
             use_container_width=True,
         )
         c4.image(
-            colorize_depth(preds["hybrid"], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
-            caption=f"Hybrid EG-DepthNet (RMSE: {best_row['RMSE']:.4f}m)",
+            colorize_depth(gt_np, vmin, vmax, cmap_name=cmap_choice, invalid_mask=~valid_gt_np, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption="HR Ground Truth Target",
             use_container_width=True,
         )
         c5.image(
-            colorize_depth(gt_np, vmin, vmax, cmap_name=cmap_choice, invalid_mask=~valid_gt_np, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
-            caption="Ground Truth High-Resolution Target",
+            colorize_depth(preds["hybrid"], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption=f"Ours (Self-Distilled Hybrid — RMSE: {best_row['RMSE']:.4f}m)",
+            use_container_width=True,
+        )
+
+        st.markdown("#### Panel 2 — The 'LoftUp' Two-Stage Upsampling Progression Strip")
+        mb_row = next(r for r in metrics_rows if r["Key"] == "mask_bicubic")
+        jbf_row = next(r for r in metrics_rows if r["Key"] == "jbf")
+        l1, l2, l3, l4, l5 = st.columns(5)
+        l1.image((rgb_np * 255).astype(np.uint8), caption="(a) Original Image", use_container_width=True)
+        l2.image(
+            colorize_depth(preds["jbf"], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption=f"(b) Classical JBF / Guided\n(RMSE: {jbf_row['RMSE']:.4f}m)",
+            use_container_width=True,
+        )
+        l3.image(
+            colorize_depth(feature_vis_np, None, None, cmap_name="viridis", near_is_warm=False),
+            caption=f"(c) {scale}× Coordinate Neural Features\n(Continuous Cross-Attention)",
+            use_container_width=True,
+        )
+        l4.image(
+            colorize_depth(preds["mask_bicubic"], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption=f"(d) Mask-Bicubic (Stage 1)\n(RMSE: {mb_row['RMSE']:.4f}m)",
+            use_container_width=True,
+        )
+        l5.image(
+            colorize_depth(preds["hybrid"], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption=f"(e) Self-Distilled Hybrid (Stage 2)\n(RMSE: {best_row['RMSE']:.4f}m | DBE: {best_row['DBE_acc']:.2f}px)",
             use_container_width=True,
         )
 
         st.markdown("#### Full Method Comparison Matrix (Classical vs. Deep vs. Hybrid vs. Target)")
         m_cols = st.columns(6)
-        for idx, m_key in enumerate(["nearest", "guided", "jbf", "deep", "hybrid"]):
+        for idx, m_key in enumerate(["nearest", "guided", "mask_bicubic", "deep", "hybrid"]):
             r_info = next(r for r in metrics_rows if r["Key"] == m_key)
             m_cols[idx].image(
                 colorize_depth(preds[m_key], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
@@ -758,22 +805,21 @@ def main() -> None:
         st.markdown("#### Internal Explainability: Learned Edge-Coherence Gate ($G_{edge}$), Uncertainty, & Improvement Heatmap")
         e1, e2, e3 = st.columns(3)
         e1.image(
-            colorize_depth(edge_gate_np, 0.0, 1.0, cmap_name="magma"),
+            colorize_depth(edge_gate_np, 0.0, 1.0, cmap_name="magma", near_is_warm=False),
             caption="Learned Edge-Coherence Gate G_edge (Suppresses Texture-Copying)",
             use_container_width=True,
         )
         e2.image(
-            colorize_depth(uncertainty_np, None, None, cmap_name="inferno"),
+            colorize_depth(uncertainty_np, None, None, cmap_name="inferno", near_is_warm=False),
             caption="Predicted Aleatoric Uncertainty (Drives Stage-3 Bilateral Energy Fusion)",
             use_container_width=True,
         )
-        # Error difference map (Bicubic Error - Hybrid Error). Positive (blue) = Hybrid is better!
         err_bic = np.abs(preds["bicubic"] - gt_np)
         err_hyb = np.abs(preds["hybrid"] - gt_np)
         gain_map = err_bic - err_hyb
         e3.image(
-            colorize_depth(gain_map, -0.15, 0.40, cmap_name="coolwarm"),
-            caption="Error Gain Map (Red/Blue: Warm regions show where Hybrid eliminated Bicubic blur)",
+            colorize_depth(gain_map, -0.15, 0.40, cmap_name="coolwarm", near_is_warm=False),
+            caption="Error Gain Map (Warm regions show where Hybrid eliminated Bicubic blur)",
             use_container_width=True,
         )
 
@@ -865,10 +911,10 @@ def main() -> None:
         st.markdown("#### Absolute Depth Error Heatmaps ($|\\hat{D} - D_{gt}|$, darker = lower error)")
         err_max = max(0.35, float(np.percentile(np.abs(preds["bicubic"] - gt_np), 97)))
         ec1, ec2, ec3, ec4 = st.columns(4)
-        for col_ui, m_key in zip([ec1, ec2, ec3, ec4], ["bicubic", "guided", "jbf", "hybrid"]):
+        for col_ui, m_key in zip([ec1, ec2, ec3, ec4], ["bicubic", "guided", "mask_bicubic", "hybrid"]):
             err_map = np.abs(preds[m_key] - gt_np)
             col_ui.image(
-                colorize_depth(err_map, 0.0, err_max, cmap_name="magma"),
+                colorize_depth(err_map, 0.0, err_max, cmap_name="magma", near_is_warm=False),
                 caption=f"{METHOD_LABELS[m_key]} Error (Mean MAE: {err_map.mean():.4f}m)",
                 use_container_width=True,
             )
@@ -1020,6 +1066,8 @@ def main() -> None:
                 "PSNR",
                 "SSIM",
                 "Boundary_RMSE",
+                "DBE_acc",
+                "DBE_comp",
                 "Edge_F1",
                 "Texture_Copy_Err",
                 "Delta1",
@@ -1029,7 +1077,7 @@ def main() -> None:
         ]
         st.dataframe(
             df.style.highlight_min(
-                subset=["RMSE", "MAE", "Boundary_RMSE", "Texture_Copy_Err"], color="#1b4332"
+                subset=["RMSE", "MAE", "Boundary_RMSE", "DBE_acc", "DBE_comp", "Texture_Copy_Err"], color="#1b4332"
             ).highlight_max(subset=["PSNR", "SSIM", "Edge_F1", "Delta1"], color="#1b4332"),
             use_container_width=True,
         )

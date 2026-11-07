@@ -12,11 +12,58 @@ from __future__ import annotations
 import time
 from typing import Callable, Dict, Optional
 
+import cv2
+import numpy as np
 import torch
 import torch.nn.functional as F
 
 from depth_refine.classical.filters import compute_spatial_gradients
 from depth_refine.data.degradation import compute_discontinuity_mask
+
+
+def compute_dbe_metrics(
+    pred_edges: torch.Tensor,
+    gt_edges: torch.Tensor,
+    max_dist: float = 10.0,
+) -> tuple[float, float]:
+    """
+    Compute Depth Boundary Error (DBE, IBims-1 / ProbID-P4 standard):
+    - DBE_acc (epsilon^acc_DBE): Truncated Euclidean Distance Transform from predicted depth edges to GT edges.
+    - DBE_comp (epsilon^comp_DBE): Truncated Euclidean Distance Transform from GT depth edges to predicted edges.
+    """
+    pe_np = pred_edges.detach().cpu().numpy().astype(bool)
+    ge_np = gt_edges.detach().cpu().numpy().astype(bool)
+    if pe_np.ndim == 4:
+        pe_np = pe_np[:, 0]
+        ge_np = ge_np[:, 0]
+    elif pe_np.ndim == 2:
+        pe_np = pe_np[None, ...]
+        ge_np = ge_np[None, ...]
+
+    acc_list = []
+    comp_list = []
+    for b in range(pe_np.shape[0]):
+        p_b = pe_np[b]
+        g_b = ge_np[b]
+        if not g_b.any():
+            acc_list.append(0.0)
+            comp_list.append(0.0)
+            continue
+        if not p_b.any():
+            acc_list.append(max_dist)
+            comp_list.append(max_dist)
+            continue
+
+        # cv2.distanceTransform computes distance to nearest zero pixel
+        dt_gt = cv2.distanceTransform((~g_b).astype(np.uint8), cv2.DIST_L2, 3)
+        dt_pred = cv2.distanceTransform((~p_b).astype(np.uint8), cv2.DIST_L2, 3)
+
+        d_acc = np.minimum(dt_gt[p_b], max_dist)
+        d_comp = np.minimum(dt_pred[g_b], max_dist)
+        acc_list.append(float(d_acc.mean()))
+        comp_list.append(float(d_comp.mean()))
+
+    return float(np.mean(acc_list)), float(np.mean(comp_list))
 
 
 def compute_ssim(
@@ -97,6 +144,8 @@ def compute_depth_metrics(
             "PSNR": 50.0,
             "SSIM": 1.0,
             "Boundary_RMSE": 0.0,
+            "DBE_acc": 0.0,
+            "DBE_comp": 0.0,
             "Edge_F1": 1.0,
             "Texture_Copy_Err": 0.0,
         }
@@ -138,6 +187,9 @@ def compute_depth_metrics(
     recall = tp / max(tp + fn, 1.0)
     edge_f1 = (2.0 * precision * recall / max(precision + recall, 1e-6)) if (tp + fp + fn) > 0 else 1.0
 
+    # Depth Boundary Error (DBE_acc & DBE_comp in pixels via Truncated Chamfer Distance)
+    dbe_acc, dbe_comp = compute_dbe_metrics(pred_edges, gt_edges)
+
     # Texture-Copy Gradient Error (spurious depth gradients on flat GT surfaces with strong RGB texture)
     _, _, pred_grad = compute_spatial_gradients(pred)
     _, _, gt_grad = compute_spatial_gradients(gt)
@@ -162,6 +214,8 @@ def compute_depth_metrics(
         "PSNR": psnr,
         "SSIM": ssim,
         "Boundary_RMSE": boundary_rmse,
+        "DBE_acc": dbe_acc,
+        "DBE_comp": dbe_comp,
         "Edge_F1": edge_f1,
         "Texture_Copy_Err": tex_copy_err,
     }

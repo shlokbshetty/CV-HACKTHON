@@ -27,6 +27,7 @@ from depth_refine.classical.filters import (
     detect_edges_and_discontinuities,
     guided_filter,
     joint_bilateral_filter,
+    mask_bicubic_upsample,
 )
 from depth_refine.classical.hole_filling import fill_depth_holes, remove_depth_outliers
 from depth_refine.classical.interpolation import interpolate_depth
@@ -42,13 +43,16 @@ from depth_refine.models.optimization import (
 
 @dataclass
 class HybridReconstructionResult:
-    """Complete output of the Hybrid Depth Reconstruction Pipeline."""
+    """Complete output of the Two-Stage Self-Distilled Hybrid Depth Reconstruction Pipeline."""
 
-    depth_hybrid: torch.Tensor  # (B, 1, H, W) or (1, H, W) final refined high-res depth
+    depth_hybrid: torch.Tensor  # (B, 1, H, W) or (1, H, W) final refined high-res depth (Stage 2)
     depth_deep: torch.Tensor  # (B, 1, H, W) or (1, H, W) raw deep network output
     depth_classical_init: torch.Tensor  # (B, 1, H, W) or (1, H, W) classical hole-filled init
     uncertainty: torch.Tensor  # (B, 1, H, W) or (1, H, W) aleatoric uncertainty map
     edge_gate: torch.Tensor  # (B, 1, H, W) or (1, H, W) geometric discontinuity gate in [0, 1]
+    depth_mask_bicubic: Optional[torch.Tensor] = None  # Stage-1 Mask-Bicubic initialization (LoftUp (d))
+    depth_prior: Optional[torch.Tensor] = None  # Metric-aligned Structural / Depth-Anything Prior
+    feature_vis: Optional[torch.Tensor] = None  # Raw 2x/4x/8x Neural Feature Map (LoftUp (c))
 
 
 class HybridReconstructor:
@@ -178,6 +182,9 @@ class HybridReconstructor:
                     coarse_depth=out.coarse_depth.float(),
                     uncertainty=out.uncertainty.float(),
                     edge_gate=out.edge_gate.float(),
+                    depth_prior=out.depth_prior.float() if out.depth_prior is not None else None,
+                    mask_bicubic=out.mask_bicubic.float() if out.mask_bicubic is not None else None,
+                    feature_vis=out.feature_vis.float() if out.feature_vis is not None else None,
                 )
             return active_model(d_in, rgb_hr=r_in, scale=sc, valid_mask_lr=m_in)
 
@@ -191,8 +198,15 @@ class HybridReconstructor:
         d_deep = model_out.depth_hr
         uncertainty = model_out.uncertainty
         edge_gate = model_out.edge_gate
+        d_mask_bic = (
+            model_out.mask_bicubic
+            if model_out.mask_bicubic is not None
+            else mask_bicubic_upsample(depth_clean_lr, rgb_hr=rgb_hr, scale=scale, valid_mask_lr=mask_clean_lr)[0]
+        )
+        d_prior = model_out.depth_prior if model_out.depth_prior is not None else d_mask_bic
+        f_vis = model_out.feature_vis if model_out.feature_vis is not None else edge_gate
 
-        # --- STAGE 3: Iterative Back-Projection (IBP) Sensor Consistency & Dual-Stream Shock Refinement ---
+        # --- STAGE 3: Iterative Back-Projection (IBP) Sensor Consistency & Boundary-Locked Anisotropic Diffusion ---
         disc_lr = detect_edges_and_discontinuities(depth_filled_lr, rgb_lr)
         interior_valid_lr = mask_clean_lr * (1.0 - disc_lr.coherence_gate)
         conf_weight = torch.clamp(1.0 / (1.0 + uncertainty * 2.0), min=0.15, max=0.55)
@@ -217,13 +231,28 @@ class HybridReconstructor:
         )
 
         # Dynamic Edge-Coherence Fusion:
-        # Planar regions (edge_gate -> 0) receive guided filtering to suppress noise and optimize RMSE.
-        # Boundary regions (edge_gate -> 1) retain 100% of the sharp neural EG-DepthNet step edge without cross-boundary smoothing!
         d_fused = (1.0 - edge_gate) * d_planar + edge_gate * d_deep
 
-        # 3c. Multi-Scale Edge-Gated Shock Filter (snaps slanted boundary ramps into crisp 1-pixel step discontinuities)
-        # Prevents flying pixels bridging foreground and background objects in 3D point clouds.
-        d_cur = d_fused
+        # 3c. 3-Step Boundary-Locked Anisotropic Diffusion restricted to dilated discontinuity mask
+        # Eliminates the (b) Per-image optimized halo problem while locking step transitions
+        dilated_disc = F.max_pool2d((edge_gate > 0.25).to(d_fused.dtype), kernel_size=5, stride=1, padding=2)
+        d_diff = d_fused.clone()
+        pad_rgb3 = F.pad(rgb_hr, (1, 1, 1, 1), mode="replicate")
+        patches_rgb3 = F.unfold(pad_rgb3, kernel_size=3).view(rgb_hr.shape[0], 3, 9, H, W)
+        c_dist3 = ((patches_rgb3 - rgb_hr.unsqueeze(2)) ** 2).mean(dim=1)
+        w_rgb3 = torch.exp(-c_dist3 / (2.0 * (0.025**2)))
+        for _ in range(3):
+            pad_d3 = F.pad(d_diff, (1, 1, 1, 1), mode="replicate")
+            patches_d3 = F.unfold(pad_d3, kernel_size=3).view(d_diff.shape[0], 9, H, W)
+            w_d3 = torch.exp(-((patches_d3 - d_diff) ** 2) / (2.0 * (0.12**2)))
+            w_aniso = w_rgb3 * w_d3
+            d_step = (patches_d3 * w_aniso).sum(dim=1, keepdim=True) / torch.clamp(
+                w_aniso.sum(dim=1, keepdim=True), min=1e-6
+            )
+            d_diff = dilated_disc * d_step + (1.0 - dilated_disc) * d_diff
+
+        # 3d. Multi-Scale Edge-Gated Shock Filter (snaps slanted boundary ramps into crisp 1-pixel step discontinuities)
+        d_cur = d_diff
         shock_mask = torch.clamp((edge_gate - 0.35) / 0.45, min=0.0, max=1.0)
         for k in (3, 5):
             pad = k // 2
@@ -233,7 +262,7 @@ class HybridReconstructor:
             target = torch.where(d_cur <= d_mid, d_erode, d_dilate)
             d_cur = (1.0 - shock_mask * 0.85) * d_cur + (shock_mask * 0.85) * target
 
-        # 3d. Final RGB-Guided Mode Snapping & Planar Denoising (wipes out remaining flying pixels)
+        # 3e. Final RGB-Guided Mode Snapping & Planar Denoising (wipes out remaining flying pixels)
         d_snapped, _ = bilateral_mode_snap_and_denoise(d_cur, rgb_hr, scale=scale)
         d_hybrid = torch.clamp(d_snapped, min=0.05)
 
@@ -244,6 +273,9 @@ class HybridReconstructor:
                 depth_classical_init=d_bicubic_hr.squeeze(0).to(orig_device),
                 uncertainty=uncertainty.squeeze(0).to(orig_device),
                 edge_gate=edge_gate.squeeze(0).to(orig_device),
+                depth_mask_bicubic=d_mask_bic.squeeze(0).to(orig_device),
+                depth_prior=d_prior.squeeze(0).to(orig_device),
+                feature_vis=f_vis.squeeze(0).to(orig_device),
             )
 
         return HybridReconstructionResult(
@@ -252,4 +284,7 @@ class HybridReconstructor:
             depth_classical_init=d_bicubic_hr.to(orig_device),
             uncertainty=uncertainty.to(orig_device),
             edge_gate=edge_gate.to(orig_device),
+            depth_mask_bicubic=d_mask_bic.to(orig_device),
+            depth_prior=d_prior.to(orig_device),
+            feature_vis=f_vis.to(orig_device),
         )

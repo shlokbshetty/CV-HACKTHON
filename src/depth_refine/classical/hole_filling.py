@@ -65,39 +65,39 @@ def remove_depth_outliers(
     m_clean = torch.where(isolated, torch.zeros_like(m_clean), m_clean)
     d_clean = torch.where(isolated, torch.zeros_like(d_clean), d_clean)
 
-    # Pass 2: 5x5 Patch Median & MAD Outlier Suppression
-    pad_d = F.pad(d_clean * m_clean, (2, 2, 2, 2), mode="replicate")
-    pad_m5 = F.pad(m_clean, (2, 2, 2, 2), mode="constant", value=0.0)
-    patches_d5 = F.unfold(pad_d, kernel_size=5).view(B, 25, H, W)
-    patches_m5 = F.unfold(pad_m5, kernel_size=5).view(B, 25, H, W)
+    # Pass 2: Two-Iteration Valid-Masked 5x5 Patch Median & MAD Z-Score Outlier Rejection
+    # Uses exact order-statistic median over valid pixels so outlier spikes never corrupt local statistics
+    for _ in range(2):
+        pad_d = F.pad(d_clean, (2, 2, 2, 2), mode="replicate")
+        pad_m5 = F.pad(m_clean, (2, 2, 2, 2), mode="constant", value=0.0)
+        patches_d5 = F.unfold(pad_d, kernel_size=5).view(B, 25, H, W)
+        patches_m5 = F.unfold(pad_m5, kernel_size=5).view(B, 25, H, W)
 
-    # Valid neighbor count (including center)
-    n_valid5 = patches_m5.sum(dim=1, keepdim=True)
+        n_valid5 = patches_m5.sum(dim=1, keepdim=True)
+        # Compute valid patch median by replacing invalid entries with +inf and indexing the middle valid rank
+        valid_bool5 = patches_m5 > 0.5
+        d_sorted, _ = torch.where(valid_bool5, patches_d5, torch.full_like(patches_d5, 1e6)).sort(dim=1)
+        mid_idx = torch.clamp((n_valid5.long() - 1) // 2, min=0, max=24)
+        median_d = torch.gather(d_sorted, dim=1, index=mid_idx)
+        median_d = torch.where(n_valid5 > 0.5, median_d, d_clean)
 
-    # Compute valid neighborhood mean and standard deviation approximation
-    sum_d = (patches_d5 * patches_m5).sum(dim=1, keepdim=True)
-    mean_d = sum_d / torch.clamp(n_valid5, min=1.0)
-    var_d = (((patches_d5 - mean_d) ** 2) * patches_m5).sum(dim=1, keepdim=True) / torch.clamp(n_valid5, min=1.0)
-    std_d = torch.sqrt(var_d + 1e-8)
+        # Compute Median Absolute Deviation (MAD) over valid neighbors
+        abs_dev = torch.abs(patches_d5 - median_d)
+        dev_sorted, _ = torch.where(valid_bool5, abs_dev, torch.full_like(abs_dev, 1e6)).sort(dim=1)
+        mad_d = torch.gather(dev_sorted, dim=1, index=mid_idx)
+        mad_d = torch.where(n_valid5 > 0.5, mad_d, torch.zeros_like(mad_d))
 
-    # Scale-adaptive jump threshold: at least 2.5 * local std, clamped to jump_threshold
-    adaptive_thresh = torch.clamp(2.5 * std_d + 0.08, min=0.15, max=jump_threshold)
+        # Z-score threshold (robust to clustered spikes and high sparsity)
+        z_thresh = torch.clamp(3.2 * (1.4826 * mad_d) + 0.12, min=0.18, max=jump_threshold)
+        center_dev = torch.abs(d_clean - median_d)
 
-    # Count how many valid neighbors agree with the center pixel
-    diff_d = torch.abs(patches_d5 - d_clean) * patches_m5
-    close_cnt = ((diff_d < adaptive_thresh) & (patches_m5 > 0.5)).sum(dim=1, keepdim=True)
+        # Count how many valid neighbors in 5x5 agree with the center pixel's depth
+        diff_center = torch.abs(patches_d5 - d_clean)
+        agree_cnt = ((diff_center < 0.22) & valid_bool5).sum(dim=1, keepdim=True).to(depth.dtype)
+        min_quorum = torch.clamp(0.24 * n_valid5, min=2.0, max=5.0)
 
-    # Center is an outlier spike if it has sufficient neighbors but very few agree with it
-    is_spike = (m_clean > 0.5) & (n_valid5 >= 4) & (close_cnt < 2)
-
-    # Non-center neighbor mean replacement
-    m_nocenter = patches_m5.clone()
-    m_nocenter[:, 12, :, :] = 0.0
-    sum_nocenter = (patches_d5 * m_nocenter).sum(dim=1, keepdim=True)
-    cnt_nocenter = m_nocenter.sum(dim=1, keepdim=True)
-    replacement = sum_nocenter / torch.clamp(cnt_nocenter, min=1.0)
-
-    d_clean = torch.where(is_spike, replacement, d_clean)
+        is_spike = (m_clean > 0.5) & (n_valid5 >= 3) & ((center_dev > z_thresh) | (agree_cnt < min_quorum)) & (center_dev > 0.18)
+        d_clean = torch.where(is_spike, median_d, d_clean)
 
     if squeeze:
         return d_clean.squeeze(0), m_clean.squeeze(0)

@@ -35,6 +35,7 @@ ALL_METHODS = [
     "bicubic",
     "guided",
     "jbf",
+    "mask_bicubic",
     "deep",
     "hybrid_int8",
     "hybrid",
@@ -47,9 +48,10 @@ METHOD_LABELS = {
     "bicubic": "Bicubic Interp.",
     "guided": "Guided Filter (RGB)",
     "jbf": "Joint Bilateral (JBF)",
+    "mask_bicubic": "Mask-Bicubic (Stage 1)",
     "deep": "EG-DepthNet (Deep BF16)",
     "hybrid_int8": "Hybrid INT8 Quantized (4x Comp.)",
-    "hybrid": "Hybrid (EG-DepthNet + JBF Energy)",
+    "hybrid": "Self-Distilled Hybrid (Stage 2)",
     "hybrid_tta": "Hybrid + Flip-TTA (Self-Ensemble)",
 }
 
@@ -89,7 +91,7 @@ class BenchmarkSuite:
         scale: int,
         valid_mask_lr: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if method in ("nearest", "bilinear", "bicubic", "guided", "jbf", "boundary_aware_classical"):
+        if method in ("nearest", "bilinear", "bicubic", "mask_bicubic", "guided", "jbf", "boundary_aware_classical"):
             return reconstruct_classical(
                 depth_lr=depth_lr,
                 rgb_hr=rgb_hr,

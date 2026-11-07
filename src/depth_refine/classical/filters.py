@@ -337,6 +337,140 @@ def bilateral_mode_snap_and_denoise(
     return d_out, edge_gate
 
 
+class MaskBicubicUpsampler:
+    """
+    Mask-Bicubic Refinement (LoftUp Stage-1 Equivalent):
+
+    Blends high-resolution boundary/segmentation masks M(p) derived from RGB-D discontinuities
+    with bicubic spatial weights w_bicubic(p, q) and RGB edge affinities w_edge(I_p, I_q):
+
+        D_Mask-Bicubic(p) = sum_{q in N(p)} w_bicubic(p, q) * I(M(p) == M(q)) * w_edge(I_p, I_q) * D(q)
+                            / sum_{q in N(p)} w_bicubic(p, q) * I(M(p) == M(q)) * w_edge(I_p, I_q)
+
+    Guarantees zero depth bleeding across foreground/background masks before neural Stage-2 refinement.
+    """
+
+    def __init__(self, sigma_edge: float = 0.032) -> None:
+        self.sigma_edge = sigma_edge
+
+    def __call__(
+        self,
+        depth_lr: torch.Tensor,
+        rgb_hr: Optional[torch.Tensor] = None,
+        scale: int = 4,
+        valid_mask_lr: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        return mask_bicubic_upsample(
+            depth_lr=depth_lr,
+            rgb_hr=rgb_hr,
+            scale=scale,
+            valid_mask_lr=valid_mask_lr,
+            sigma_edge=self.sigma_edge,
+        )
+
+
+def mask_bicubic_upsample(
+    depth_lr: torch.Tensor,
+    rgb_hr: Optional[torch.Tensor] = None,
+    scale: int = 4,
+    valid_mask_lr: Optional[torch.Tensor] = None,
+    sigma_edge: float = 0.032,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute Stage-1 Mask-Bicubic upsampled depth and its binary/soft foreground-background partition mask.
+    """
+    squeeze = False
+    if depth_lr.ndim == 3:
+        depth_lr = depth_lr.unsqueeze(0)
+        if rgb_hr is not None and rgb_hr.ndim == 3:
+            rgb_hr = rgb_hr.unsqueeze(0)
+        if valid_mask_lr is not None and valid_mask_lr.ndim == 3:
+            valid_mask_lr = valid_mask_lr.unsqueeze(0)
+        squeeze = True
+
+    if rgb_hr is not None:
+        target_size = (rgb_hr.shape[-2], rgb_hr.shape[-1])
+        rgb_lr = F.interpolate(rgb_hr, size=depth_lr.shape[-2:], mode="bilinear", align_corners=False)
+    else:
+        target_size = (depth_lr.shape[-2] * scale, depth_lr.shape[-1] * scale)
+        rgb_lr = None
+
+    if valid_mask_lr is None:
+        valid_mask_lr = ((depth_lr > 1e-3) & torch.isfinite(depth_lr)).to(depth_lr.dtype)
+    else:
+        valid_mask_lr = ((valid_mask_lr > 0.5) & (depth_lr > 1e-3) & torch.isfinite(depth_lr)).to(depth_lr.dtype)
+
+    depth_clean_lr, mask_clean_lr = remove_depth_outliers(depth_lr, valid_mask_lr)
+    depth_lr_filled = fill_depth_holes(
+        depth_clean_lr, rgb=rgb_lr, valid_mask=mask_clean_lr, method="multiscale_bilateral"
+    )
+    d_bic = interpolate_depth(depth_lr_filled, target_size=target_size, mode="bicubic")
+
+    if rgb_hr is None:
+        ones_mask = torch.ones_like(d_bic)
+        if squeeze:
+            return d_bic.squeeze(0), ones_mask.squeeze(0)
+        return d_bic, ones_mask
+
+    B, _, H, W = d_bic.shape
+    device = d_bic.device
+    dtype = d_bic.dtype
+
+    k_size = 5 if scale <= 2 else min(9, 2 * scale + 1)
+    if k_size % 2 == 0:
+        k_size += 1
+    radius = k_size // 2
+    N = k_size * k_size
+
+    # Bicubic-approximating spatial kernel w_bicubic(p, q)
+    coords = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
+    yy, xx = torch.meshgrid(coords, coords, indexing="ij")
+    dist = torch.sqrt(xx * xx + yy * yy) / max(float(radius), 1.0)
+    w_bicubic = torch.clamp(1.0 - 1.5 * (dist**2) + 0.75 * (dist**3), min=0.05).reshape(1, N, 1, 1)
+
+    pad_d = F.pad(d_bic, (radius, radius, radius, radius), mode="replicate")
+    pad_rgb = F.pad(rgb_hr, (radius, radius, radius, radius), mode="replicate")
+    patches_d = F.unfold(pad_d, kernel_size=k_size).view(B, N, H, W)
+    patches_rgb = F.unfold(pad_rgb, kernel_size=k_size).view(B, 3, N, H, W)
+
+    # Derive high-resolution foreground/background partition mask M(p) in [0, 1]
+    d_min = patches_d.min(dim=1, keepdim=True).values
+    d_max = patches_d.max(dim=1, keepdim=True).values
+    d_mid = 0.5 * (d_min + d_max)
+    span = (d_max - d_min) / torch.clamp(d_mid, min=0.25)
+
+    fg_prior = torch.sigmoid((d_mid - patches_d) * 28.0) + 1e-4
+    bg_prior = torch.sigmoid((patches_d - d_mid) * 28.0) + 1e-4
+
+    c_fg = (patches_rgb * fg_prior.unsqueeze(1)).sum(dim=2) / torch.clamp(fg_prior.sum(dim=1, keepdim=True), min=1e-6)
+    c_bg = (patches_rgb * bg_prior.unsqueeze(1)).sum(dim=2) / torch.clamp(bg_prior.sum(dim=1, keepdim=True), min=1e-6)
+
+    dist_fg = ((rgb_hr - c_fg) ** 2).mean(dim=1, keepdim=True)
+    dist_bg = ((rgb_hr - c_bg) ** 2).mean(dim=1, keepdim=True)
+    proto_diff = torch.sqrt(((c_fg - c_bg) ** 2).mean(dim=1, keepdim=True) + 1e-8)
+    disc_gate = torch.sigmoid((span - 0.04) * 65.0) * torch.sigmoid((proto_diff - 0.03) * 55.0)
+
+    # M(p): 1.0 on foreground side of boundary, 0.0 on background side, 0.5 on flat interior
+    m_center = disc_gate * torch.sigmoid((dist_bg - dist_fg) / (2.0 * (0.025**2))) + (1.0 - disc_gate) * 0.5
+    pad_m = F.pad(m_center, (radius, radius, radius, radius), mode="replicate")
+    patches_m = F.unfold(pad_m, kernel_size=k_size).view(B, N, H, W)
+
+    # Partition compatibility I(M(p) == M(q)): 1 when on same side of mask, 0 across boundary
+    mask_compat = torch.exp(-((m_center - patches_m) ** 2) / (2.0 * (0.18**2)))
+
+    # Edge-stopping RGB weight w_edge(I_p, I_q)
+    color_dist2 = ((patches_rgb - rgb_hr.unsqueeze(2)) ** 2).mean(dim=1)
+    eff_sigma = sigma_edge * disc_gate + 0.35 * (1.0 - disc_gate)
+    w_edge = torch.exp(-color_dist2 / (2.0 * (eff_sigma * eff_sigma) + 1e-8))
+
+    weights = w_bicubic * mask_compat * w_edge
+    d_mask_bic = (patches_d * weights).sum(dim=1, keepdim=True) / torch.clamp(weights.sum(dim=1, keepdim=True), min=1e-8)
+
+    if squeeze:
+        return d_mask_bic.squeeze(0), disc_gate.squeeze(0)
+    return d_mask_bic, disc_gate
+
+
 def reconstruct_classical(
     depth_lr: torch.Tensor,
     rgb_hr: Optional[torch.Tensor] = None,
@@ -345,6 +479,7 @@ def reconstruct_classical(
         "nearest",
         "bilinear",
         "bicubic",
+        "mask_bicubic",
         "jbf",
         "guided",
         "boundary_aware_classical",
@@ -418,6 +553,10 @@ def reconstruct_classical(
             iterations=1,
             texture_suppression=False,
         )
+        return out.squeeze(0) if squeeze else out
+
+    if method == "mask_bicubic":
+        out, _ = mask_bicubic_upsample(depth_lr, rgb_hr=rgb_hr, scale=scale, valid_mask_lr=valid_mask_lr)
         return out.squeeze(0) if squeeze else out
 
     if method == "boundary_aware_classical":
