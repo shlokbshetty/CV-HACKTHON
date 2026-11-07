@@ -208,3 +208,21 @@ Reproducible via `uv run python scripts/run_ablation.py`:
 4. **Extreme $8\times$ Downsampling on Thin Structures ($< 4\text{ px}$ wide)**:
    - *Phenomenon*: Structures thinner than half a low-resolution grid cell (e.g., thin chair legs or wires under $8\times$ downsampling) may be completely averaged out in the LR sensor input ($D_{\min}$ and $D_{\max}$ both reflect the background).
    - *Mitigation*: Our uncertainty head ($\hat{\sigma}_D$) flags thin high-frequency RGB structures with high uncertainty so downstream 3D applications can filter uncertain boundary points.
+
+---
+
+## 7. Deployment & Next-Gen Web Studio (`frontend/`)
+
+The project features two deployment modalities:
+
+1. **Next-Gen Web Studio (`frontend/`)**:
+   - Built with **React 18 + Vite 6 + TypeScript** and **Three.js (`@react-three/fiber`, `@react-three/drei`)**.
+   - **Interactive 3D Workspace (`/app` — `WorkspaceV3.tsx`)**: Real-time 3D point cloud & textured surface mesh renderer with 4 render modes (*Surface, Points, Wireframe, Clay*), dynamic Z-extrusion controls, 5 perceptual colormaps (*Turbo, Viridis, Thermal, Clay, Albedo*), and client-side **OBJ 3D model export** (`exportDepthToObj`).
+   - **CV Benchmark Studio (`/studio`, `/benchmark` — `BenchmarkStudioPage.tsx`)**: Interactive multi-dataset comparison (NYU Depth V2, Middlebury Stereo, KITTI LiDAR) with real-time HUD scorecards for RMSE, Boundary RMSE, PSNR, SSIM, and Edge-F1.
+   - **Cinematic Scrollytelling (`/` — `LandingV3.tsx`)**: Video scroll-synchronization powered by GSAP and Lenis.
+   - Quickstart: `cd frontend; npm install; npm run dev` (Runs on `http://localhost:5173`).
+
+2. **Streamlit Studio (`app.py`) & Docker**:
+   - Interactive Streamlit dashboard on port 8501 (`uv run streamlit run app.py`).
+   - Production Docker container: `docker build -t depth-refine-p4 . && docker run -p 8501:8501 depth-refine-p4`.
+   - Official Submission Report: [`Hackathon_Technical_Solution_Report.md`](./Hackathon_Technical_Solution_Report.md).

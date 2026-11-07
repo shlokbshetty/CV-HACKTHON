@@ -77,7 +77,7 @@ uv run python scripts/train.py --config configs/rtx5060_nyuv2.yaml
 - Uses `bfloat16` AMP across $2\times, 4\times, 8\times$ scales with **Exponential Moving Average (EMA)** weights and early stopping.
 - Saves the best weights to `checkpoints/eg_depthnet_best.pt`.
 
-### Step 3: Run Full Evaluation, Ablation Study & Launch the Interactive Web App
+### Step 3: Run Full Evaluation, Ablation Study & Launch Interactive Studios
 ```powershell
 # 1. Re-run benchmark tables across NYUv2, Middlebury, and KITTI (2x, 4x, 8x):
 uv run python scripts/evaluate.py --datasets nyuv2 middlebury kitti --scales 2 4 8
@@ -85,11 +85,15 @@ uv run python scripts/evaluate.py --datasets nyuv2 middlebury kitti --scales 2 4
 # 2. Run the 8-stage controlled ablation study (saves outputs/ablation_report.md):
 uv run python scripts/run_ablation.py
 
-# 3. Launch the Streamlit application:
+# 3. Launch the Next-Gen Web Studio (React 18 + Three.js 3D WebGL on Port 5173):
+cd frontend; npm install; npm run dev
+
+# 4. Launch the Streamlit Studio application (Port 8501):
 uv run streamlit run app.py
 ```
 
-### Step 4: Public Deployment (Streamlit Community Cloud / HuggingFace Spaces / Docker)
+### Step 4: Public Deployment (Web Studio / Streamlit / Docker)
+- **Next-Gen Web Studio (`frontend/`)**: Vite + React 18 + Three.js real-time 3D point cloud & textured surface mesh viewer, CV benchmark studio (`/studio`), and client-side OBJ exporter.
 - **Streamlit Community Cloud (1-Click Public URL)**:
   1. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub.
   2. Select repository `shlokbshetty/CV-HACKTHON`, branch `main`, and main file path `app.py`.
@@ -98,7 +102,9 @@ uv run streamlit run app.py
   ```bash
   docker build -t depth-refine-p4 . && docker run -p 8501:8501 depth-refine-p4
   ```
-- **Hackathon Submission Document**: See [`eval_P4_TeamID.md`](./eval_P4_TeamID.md) for the complete evaluation report, system architecture diagram, strict NYUv2 train/test split verification, multi-scale benchmarks, 8-stage ablation study, and documented failure cases.
+- **Hackathon Submission Reports**:
+  - [`Hackathon_Technical_Solution_Report.md`](./Hackathon_Technical_Solution_Report.md): Official Hackathon Technical Solution Report with problem formulation, classical/deep/hybrid design, cross-dataset benchmarks, ablation study, failure modes, and Next-Gen frontend guide.
+  - [`eval_P4_TeamID.md`](./eval_P4_TeamID.md): Technical deep-dive evaluation report.
 
 ---
 
