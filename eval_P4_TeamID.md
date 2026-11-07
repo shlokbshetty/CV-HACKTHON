@@ -9,11 +9,12 @@
 | :--- | :--- |
 | **Problem ID** | `P4` — Edge-Preserving Depth Map Upsampling and Refinement |
 | **Team ID** | `TeamID` *(Replace with official Team ID)* |
-| **Member 1 (Name & USN)** | `Shlok B Shetty — [USN_1]` |
-| **Member 2 (Name & USN)** | `Shree Yadav — [USN_2]` |
-| **Member 3 (Name & USN)** | `[Member_3_Name] — [USN_3]` |
-| **Member 4 (Name & USN)** | `[Member_4_Name] — [USN_4]` |
-| **Repository URL** | `https://github.com/shlokbshetty/CV-HACKTHON` |
+| **Member 1 (Name & USN)** | `Shlok Shetty — 1RUA24CSE0433` |
+| **Member 2 (Name & USN)** | `Shree Santosh Yadav — 1RUA24CSE0436` |
+| **Member 3 (Name & USN)** | `Shiveshwar Sanjay Magadum — 1RUA24CSE0432` |
+| **Member 4 (Name & USN)** | `Siddharth S Gadekar — 1RUA24CSE0456` |
+| **Member 5 (Name & USN)** | `Shashank Tandan — 1RUA24CSE0425` |
+| **Repository URL** | `https://github.com/shlokbshetty/Depth-lab` |
 
 ---
 
