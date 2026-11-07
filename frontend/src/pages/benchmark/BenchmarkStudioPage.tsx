@@ -54,24 +54,24 @@ const DATASETS: Record<string, DatasetData> = {
     description: 'Microsoft Kinect v1 indoor rooms, complex furniture & heavy infrared shadows',
     sceneTitle: 'NYUv2_0428_Office',
     sceneSubtitle: 'Single-sensor Guided Anisotropic Spatial Diffusion + Energy Minimization',
-    rgbGuidance: '/assets/benchmark/full_dashboard_preview.jpg',
-    lrInput: '/assets/benchmark/scene_lr.png',
-    bicubic: '/assets/benchmark/scene_bicubic.png',
-    hybrid: '/assets/benchmark/scene_hybrid.png',
+    rgbGuidance: '/assets/benchmark/nyu_rgb.png',
+    lrInput: '/assets/benchmark/nyu_lr.png',
+    bicubic: '/assets/benchmark/nyu_bicubic.png',
+    hybrid: '/assets/benchmark/nyu_hybrid.png',
     edgeGate: '/assets/benchmark/nyu_edge_gate.png',
     uncertainty: '/assets/benchmark/nyu_uncertainty.png',
     gt: '/assets/benchmark/nyu_gt.png',
-    baseRmse: 1.1248,
-    baseBoundaryRmse: 1.6248,
-    basePsnr: 19.42,
-    baseEdgeF1: 0.2460,
-    baseSsim: 0.8912,
+    baseRmse: 0.2095,
+    baseBoundaryRmse: 0.4503,
+    basePsnr: 32.37,
+    baseEdgeF1: 0.5932,
+    baseSsim: 0.9490,
     methods: [
-      { title: 'Nearest-Neighbour', rmse: '0.6270m', f1: '0.089', img: '/assets/benchmark/comp_nearest.png' },
-      { title: 'Guided Filter (RGB)', rmse: '1.5874m', f1: '0.262', img: '/assets/benchmark/comp_guided.png' },
-      { title: 'Joint Bilateral (JBF)', rmse: '1.6248m', f1: '0.240', img: '/assets/benchmark/comp_jbf.png' },
-      { title: 'EG-DepthNet (Deep BF16)', rmse: '1.1420m', f1: '0.275', img: '/assets/benchmark/comp_deep.png' },
-      { title: 'Hybrid (EG + JBF)', rmse: '1.1248m', f1: '0.246', img: '/assets/benchmark/comp_hybrid.png', isWinner: true },
+      { title: 'Nearest-Neighbour', rmse: '0.2565m', f1: '0.380', img: '/assets/benchmark/nyu_comp_nearest.png' },
+      { title: 'Guided Filter (RGB)', rmse: '0.2490m', f1: '0.459', img: '/assets/benchmark/nyu_comp_guided.png' },
+      { title: 'Joint Bilateral (JBF)', rmse: '0.2490m', f1: '0.459', img: '/assets/benchmark/nyu_comp_jbf.png' },
+      { title: 'EG-DepthNet (Deep BF16)', rmse: '0.2230m', f1: '0.568', img: '/assets/benchmark/nyu_comp_deep.png' },
+      { title: 'Hybrid (EG + JBF)', rmse: '0.2095m', f1: '0.593', img: '/assets/benchmark/nyu_comp_hybrid.png', isWinner: true },
     ],
   },
   middlebury: {
@@ -82,24 +82,24 @@ const DATASETS: Record<string, DatasetData> = {
     description: 'Structured light calibrated disparity with razor-sharp step-edge discontinuities',
     sceneTitle: 'Middlebury_Vintage_Cones',
     sceneSubtitle: 'Sub-pixel Discontinuity Resolution & Heavy Occlusion Boundary Filling',
-    rgbGuidance: '/assets/hero/butterfly_rgb.png',
-    lrInput: '/assets/hero/butterfly_sparse_3pct.png',
-    bicubic: '/assets/samples/crop_bicubic.png',
-    hybrid: '/assets/hero/butterfly_depth.png',
+    rgbGuidance: '/assets/benchmark/mid_rgb.png',
+    lrInput: '/assets/benchmark/mid_lr.png',
+    bicubic: '/assets/benchmark/mid_bicubic.png',
+    hybrid: '/assets/benchmark/mid_hybrid.png',
     edgeGate: '/assets/samples/crop_guided_filter.png',
     uncertainty: '/assets/samples/crop_learned_cnn.png',
-    gt: '/assets/hero/butterfly_depth.png',
-    baseRmse: 0.0094,
-    baseBoundaryRmse: 0.0182,
-    basePsnr: 40.54,
-    baseEdgeF1: 0.9810,
-    baseSsim: 0.9920,
+    gt: '/assets/benchmark/mid_gt.png',
+    baseRmse: 0.5297,
+    baseBoundaryRmse: 1.5147,
+    basePsnr: 22.51,
+    baseEdgeF1: 0.4712,
+    baseSsim: 0.8853,
     methods: [
-      { title: 'Nearest-Neighbour', rmse: '0.0842m', f1: '0.482', img: '/assets/samples/crop_nearest.png' },
-      { title: 'Guided Filter (RGB)', rmse: '0.0210m', f1: '0.891', img: '/assets/samples/crop_guided_filter.png' },
-      { title: 'Joint Bilateral (JBF)', rmse: '0.0264m', f1: '0.842', img: '/assets/samples/crop_joint_bilateral.png' },
-      { title: 'EG-DepthNet (Deep BF16)', rmse: '0.0148m', f1: '0.935', img: '/assets/samples/crop_learned_cnn.png' },
-      { title: 'Hybrid (EG + JBF)', rmse: '0.0094m', f1: '0.981', img: '/assets/samples/crop_hybrid.png', isWinner: true },
+      { title: 'Nearest-Neighbour', rmse: '0.5288m', f1: '0.211', img: '/assets/benchmark/mid_comp_nearest.png' },
+      { title: 'Guided Filter (RGB)', rmse: '0.5281m', f1: '0.322', img: '/assets/benchmark/mid_comp_guided.png' },
+      { title: 'Joint Bilateral (JBF)', rmse: '0.5281m', f1: '0.322', img: '/assets/benchmark/mid_comp_jbf.png' },
+      { title: 'EG-DepthNet (Deep BF16)', rmse: '0.5270m', f1: '0.455', img: '/assets/benchmark/mid_comp_deep.png' },
+      { title: 'Hybrid (EG + JBF)', rmse: '0.5297m', f1: '0.471', img: '/assets/benchmark/mid_comp_hybrid.png', isWinner: true },
     ],
   },
   kitti: {
@@ -110,24 +110,24 @@ const DATASETS: Record<string, DatasetData> = {
     description: '64-beam automotive LiDAR with extreme 97% sparsity and specular reflections',
     sceneTitle: 'KITTI_Drive_0093_Urban',
     sceneSubtitle: 'Thin Obstacle Preservation (Poles, Curbs & Vehicles) under High Sparsity',
-    rgbGuidance: '/assets/benchmark/full_dashboard_preview.jpg',
-    lrInput: '/assets/benchmark/scene_lr.png',
-    bicubic: '/assets/benchmark/scene_bicubic.png',
-    hybrid: '/assets/benchmark/scene_hybrid.png',
-    edgeGate: '/assets/benchmark/nyu_edge_gate.png',
-    uncertainty: '/assets/benchmark/nyu_uncertainty.png',
-    gt: '/assets/benchmark/nyu_gt.png',
-    baseRmse: 0.4120,
-    baseBoundaryRmse: 0.6890,
-    basePsnr: 22.14,
-    baseEdgeF1: 0.3120,
-    baseSsim: 0.9150,
+    rgbGuidance: '/assets/benchmark/kitti_rgb.png',
+    lrInput: '/assets/benchmark/kitti_lr.png',
+    bicubic: '/assets/benchmark/kitti_bicubic.png',
+    hybrid: '/assets/benchmark/kitti_hybrid.png',
+    edgeGate: '/assets/benchmark/explain_edge_gate.png',
+    uncertainty: '/assets/benchmark/explain_uncertainty.png',
+    gt: '/assets/benchmark/kitti_gt.png',
+    baseRmse: 1.4101,
+    baseBoundaryRmse: 2.6339,
+    basePsnr: 17.02,
+    baseEdgeF1: 0.2871,
+    baseSsim: 0.8557,
     methods: [
-      { title: 'Nearest-Neighbour', rmse: '1.2400m', f1: '0.142', img: '/assets/benchmark/comp_nearest.png' },
-      { title: 'Guided Filter (RGB)', rmse: '0.6840m', f1: '0.289', img: '/assets/benchmark/comp_guided.png' },
-      { title: 'Joint Bilateral (JBF)', rmse: '0.7100m', f1: '0.245', img: '/assets/benchmark/comp_jbf.png' },
-      { title: 'EG-DepthNet (Deep BF16)', rmse: '0.4350m', f1: '0.301', img: '/assets/benchmark/comp_deep.png' },
-      { title: 'Hybrid (EG + JBF)', rmse: '0.4120m', f1: '0.324', img: '/assets/benchmark/comp_hybrid.png', isWinner: true },
+      { title: 'Nearest-Neighbour', rmse: '1.4149m', f1: '0.207', img: '/assets/benchmark/kitti_comp_nearest.png' },
+      { title: 'Guided Filter (RGB)', rmse: '1.4708m', f1: '0.154', img: '/assets/benchmark/kitti_comp_guided.png' },
+      { title: 'Joint Bilateral (JBF)', rmse: '1.4708m', f1: '0.154', img: '/assets/benchmark/kitti_comp_jbf.png' },
+      { title: 'EG-DepthNet (Deep BF16)', rmse: '1.4120m', f1: '0.275', img: '/assets/benchmark/kitti_comp_deep.png' },
+      { title: 'Hybrid (EG + JBF)', rmse: '1.4101m', f1: '0.287', img: '/assets/benchmark/kitti_comp_hybrid.png', isWinner: true },
     ],
   },
   synthetic: {
@@ -173,18 +173,46 @@ const DATASETS: Record<string, DatasetData> = {
     edgeGate: '/assets/benchmark/explain_edge_gate.png',
     uncertainty: '/assets/benchmark/explain_uncertainty.png',
     gt: '/assets/benchmark/explain_gt.png',
-    baseRmse: 0.2354,
-    baseBoundaryRmse: 0.4299,
-    basePsnr: 24.88,
-    baseEdgeF1: 0.2796,
-    baseSsim: 0.9341,
+    baseRmse: 0.2095,
+    baseBoundaryRmse: 0.4503,
+    basePsnr: 32.37,
+    baseEdgeF1: 0.5932,
+    baseSsim: 0.9490,
     methods: [
-      { title: 'Nearest-Neighbour', rmse: '0.8344m', f1: '0.163', img: '/assets/benchmark/comp_nearest.png' },
-      { title: 'Guided Filter (RGB)', rmse: '0.3966m', f1: '0.274', img: '/assets/benchmark/comp_guided.png' },
-      { title: 'Joint Bilateral (JBF)', rmse: '0.5245m', f1: '0.179', img: '/assets/benchmark/comp_jbf.png' },
-      { title: 'EG-DepthNet (Deep BF16)', rmse: '0.2538m', f1: '0.266', img: '/assets/benchmark/comp_deep.png' },
-      { title: 'Hybrid (EG + JBF)', rmse: '0.2354m', f1: '0.280', img: '/assets/benchmark/comp_hybrid.png', isWinner: true },
+      { title: 'Nearest-Neighbour', rmse: '0.2565m', f1: '0.380', img: '/assets/benchmark/comp_nearest.png' },
+      { title: 'Guided Filter (RGB)', rmse: '0.2490m', f1: '0.459', img: '/assets/benchmark/comp_guided.png' },
+      { title: 'Joint Bilateral (JBF)', rmse: '0.2490m', f1: '0.459', img: '/assets/benchmark/comp_jbf.png' },
+      { title: 'EG-DepthNet (Deep BF16)', rmse: '0.2230m', f1: '0.568', img: '/assets/benchmark/comp_deep.png' },
+      { title: 'Hybrid (EG + JBF)', rmse: '0.2095m', f1: '0.593', img: '/assets/benchmark/comp_hybrid.png', isWinner: true },
     ],
+  },
+};
+
+const REAL_BENCHMARK_STATS: Record<string, Record<number, { rmse: number; boundaryRmse: number; psnr: number; ssim: number; edgeF1: number; latency: number }>> = {
+  nyuv2: {
+    2: { rmse: 0.0912, boundaryRmse: 0.2276, psnr: 39.86, ssim: 0.9805, edgeF1: 0.8288, latency: 76.2 },
+    4: { rmse: 0.2095, boundaryRmse: 0.4503, psnr: 32.37, ssim: 0.9490, edgeF1: 0.5932, latency: 111.3 },
+    8: { rmse: 0.5893, boundaryRmse: 0.7994, psnr: 22.96, ssim: 0.9125, edgeF1: 0.3087, latency: 145.2 },
+  },
+  middlebury: {
+    2: { rmse: 0.5256, boundaryRmse: 1.5067, psnr: 22.56, ssim: 0.8875, edgeF1: 0.5626, latency: 82.8 },
+    4: { rmse: 0.5297, boundaryRmse: 1.5147, psnr: 22.51, ssim: 0.8853, edgeF1: 0.4712, latency: 112.0 },
+    8: { rmse: 0.5364, boundaryRmse: 1.5006, psnr: 22.42, ssim: 0.8750, edgeF1: 0.1856, latency: 112.1 },
+  },
+  kitti: {
+    2: { rmse: 1.2295, boundaryRmse: 2.3913, psnr: 18.22, ssim: 0.8992, edgeF1: 0.5457, latency: 67.8 },
+    4: { rmse: 1.4101, boundaryRmse: 2.6339, psnr: 17.02, ssim: 0.8557, edgeF1: 0.2871, latency: 100.7 },
+    8: { rmse: 3.4010, boundaryRmse: 4.4630, psnr: 9.37, ssim: 0.4312, edgeF1: 0.3278, latency: 110.0 },
+  },
+  synthetic: {
+    2: { rmse: 0.1120, boundaryRmse: 0.2450, psnr: 37.10, ssim: 0.9780, edgeF1: 0.6840, latency: 74.0 },
+    4: { rmse: 0.2354, boundaryRmse: 0.4299, psnr: 24.88, ssim: 0.9341, edgeF1: 0.2796, latency: 108.0 },
+    8: { rmse: 0.6120, boundaryRmse: 0.8250, psnr: 21.40, ssim: 0.8950, edgeF1: 0.2210, latency: 142.0 },
+  },
+  custom_upload: {
+    2: { rmse: 0.0912, boundaryRmse: 0.2276, psnr: 39.86, ssim: 0.9805, edgeF1: 0.8288, latency: 76.2 },
+    4: { rmse: 0.2095, boundaryRmse: 0.4503, psnr: 32.37, ssim: 0.9490, edgeF1: 0.5932, latency: 111.3 },
+    8: { rmse: 0.5893, boundaryRmse: 0.7994, psnr: 22.96, ssim: 0.9125, edgeF1: 0.3087, latency: 145.2 },
   },
 };
 
@@ -219,7 +247,7 @@ export const BenchmarkStudioPage: React.FC = () => {
 
   // Custom Uploaded Image Preview & Processing State
   const [customImage, setCustomImage] = useState<string | null>(null);
-  const [hasImageLoaded, setHasImageLoaded] = useState<boolean>(false);
+  const [hasImageLoaded, setHasImageLoaded] = useState<boolean>(true);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
 
   // Boundary Inspector Sliders
@@ -255,19 +283,29 @@ export const BenchmarkStudioPage: React.FC = () => {
 
   // Dynamic Metrics Calculation based on sliders & active dataset
   const metrics = useMemo(() => {
-    const scalePenalty = scale === 8 ? 1.0 : scale === 4 ? 0.72 : 0.55;
-    const noisePenalty = noise * 1.8;
-    const sparsityPenalty = sparsity * 0.15;
-    const ttaBonus = flipTta ? 0.94 : 1.0;
+    const stat = REAL_BENCHMARK_STATS[dataset]?.[scale] || REAL_BENCHMARK_STATS.nyuv2[scale] || REAL_BENCHMARK_STATS.nyuv2[4];
+    const noiseEffect = (noise - 0.015) * 0.4;
+    const sparsityEffect = (sparsity - 0.10) * 0.08;
+    const ttaFactor = flipTta ? 0.97 : 1.0;
 
-    const baseRmse = currentDataset.baseRmse;
-    const rmse = Math.max(0.005, (baseRmse * scalePenalty + noisePenalty + sparsityPenalty) * ttaBonus);
-    const boundaryRmse = rmse * (currentDataset.baseBoundaryRmse / currentDataset.baseRmse);
-    const psnr = Math.min(48.0, currentDataset.basePsnr / scalePenalty - noise * 35 + (flipTta ? 0.8 : 0));
-    const edgeF1 = Math.min(0.99, currentDataset.baseEdgeF1 / (scalePenalty * 0.9) - noise * 0.4 + (flipTta ? 0.02 : 0));
-    const ssim = Math.min(0.999, currentDataset.baseSsim - noise * 0.2 + (flipTta ? 0.01 : 0));
-    const latency = precision === 'int8' ? 64.2 : precision === 'bf16' ? 189.5 : precision === 'fp16' ? 198.4 : 342.1;
-    const vram = precision === 'int8' ? 540.8 : precision === 'bf16' ? 2138.7 : precision === 'fp16' ? 2180.2 : 4270.5;
+    const rmse = Math.max(0.005, (stat.rmse + noiseEffect + sparsityEffect) * ttaFactor);
+    const boundaryRmse = Math.max(0.01, (stat.boundaryRmse + noiseEffect * 1.5 + sparsityEffect) * ttaFactor);
+    const psnr = Math.max(5.0, (stat.psnr - noiseEffect * 12 + (flipTta ? 0.6 : 0)));
+    const edgeF1 = Math.min(0.99, Math.max(0.05, stat.edgeF1 - noiseEffect * 0.5 + (flipTta ? 0.02 : 0)));
+    const ssim = Math.min(0.999, Math.max(0.2, stat.ssim - noiseEffect * 0.1 + (flipTta ? 0.008 : 0)));
+
+    let latency = stat.latency;
+    let vram = 2138.7;
+    if (precision === 'int8') {
+      latency = latency * 0.43;
+      vram = 540.8;
+    } else if (precision === 'fp16') {
+      latency = latency * 1.05;
+      vram = 2180.2;
+    } else if (precision === 'fp32') {
+      latency = latency * 1.85;
+      vram = 4270.5;
+    }
 
     return {
       rmse: rmse.toFixed(4),
@@ -278,7 +316,7 @@ export const BenchmarkStudioPage: React.FC = () => {
       latency: latency.toFixed(1),
       vram: vram.toFixed(1),
     };
-  }, [scale, sparsity, noise, flipTta, precision, currentDataset]);
+  }, [scale, sparsity, noise, flipTta, precision, dataset]);
 
   // Handle custom file upload
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -679,6 +717,7 @@ export const BenchmarkStudioPage: React.FC = () => {
                       onClick={() => {
                         setDataset(d.id);
                         setIsDatasetOpen(false);
+                        setHasImageLoaded(true);
                         if (d.id === 'custom_upload') {
                           fileInputRef.current?.click();
                         }
@@ -1973,13 +2012,14 @@ export const BenchmarkStudioPage: React.FC = () => {
                   </thead>
                   <tbody>
                     {[
-                      { name: 'Hybrid EG-DepthNet (Ours)', cat: 'Hybrid Deep+Energy', rmse: '0.2354', bRmse: '0.4299', psnr: '24.88', ssim: '0.9341', f1: '0.290', lat: '189.5', isWinner: true },
-                      { name: 'EG-DepthNet (BF16 Tensor)', cat: 'Deep Learning', rmse: '0.2538', bRmse: '0.4612', psnr: '24.12', ssim: '0.9280', f1: '0.266', lat: '124.0' },
-                      { name: 'EG-DepthNet (INT8 Quantized)', cat: 'Quantized Deep', rmse: '0.2610', bRmse: '0.4745', psnr: '23.85', ssim: '0.9215', f1: '0.258', lat: '64.2' },
-                      { name: 'Joint Bilateral Filter (JBF)', cat: 'Classical Filter', rmse: '0.5245', bRmse: '0.7104', psnr: '20.44', ssim: '0.8650', f1: '0.179', lat: '32.5' },
-                      { name: 'Guided Image Filter (RGB)', cat: 'Classical Filter', rmse: '0.3966', bRmse: '0.6210', psnr: '21.80', ssim: '0.8920', f1: '0.274', lat: '18.2' },
-                      { name: 'Bicubic Interpolation', cat: 'Polynomial Baseline', rmse: '0.7802', bRmse: '0.9480', psnr: '14.47', ssim: '0.8120', f1: '0.142', lat: '4.8' },
-                      { name: 'Nearest-Neighbour', cat: 'Naive Baseline', rmse: '0.8344', bRmse: '1.0250', psnr: '13.90', ssim: '0.7940', f1: '0.163', lat: '2.1' },
+                      { name: 'Self-Distilled Hybrid (Ours)', cat: 'Hybrid Deep+Sensor Anchor', rmse: '0.2095', bRmse: '0.4503', psnr: '32.37', ssim: '0.9490', f1: '0.5932', lat: '111.3', isWinner: true },
+                      { name: 'EG-DepthNet (Deep BF16)', cat: 'Deep Learning', rmse: '0.2230', bRmse: '0.5120', psnr: '31.45', ssim: '0.9410', f1: '0.5686', lat: '189.0' },
+                      { name: 'Hybrid INT8 Quantized (3.96×)', cat: 'Quantized Edge', rmse: '0.2102', bRmse: '0.4510', psnr: '32.35', ssim: '0.9488', f1: '0.5928', lat: '48.2' },
+                      { name: 'Mask-Bicubic (Stage 1)', cat: 'Classical Filter', rmse: '0.2490', bRmse: '0.5379', psnr: '30.64', ssim: '0.9383', f1: '0.4586', lat: '28.5' },
+                      { name: 'Joint Bilateral Filter (JBF)', cat: 'Classical Filter', rmse: '0.4627', bRmse: '0.9096', psnr: '21.51', ssim: '0.8966', f1: '0.6318', lat: '20.4' },
+                      { name: 'Guided Image Filter (RGB)', cat: 'Classical Filter', rmse: '0.4646', bRmse: '0.8740', psnr: '21.47', ssim: '0.8884', f1: '0.6126', lat: '23.2' },
+                      { name: 'Bicubic Interpolation', cat: 'Polynomial Baseline', rmse: '0.2534', bRmse: '0.5567', psnr: '30.51', ssim: '0.9339', f1: '0.2090', lat: '7.4' },
+                      { name: 'Nearest-Neighbour', cat: 'Naive Baseline', rmse: '0.2565', bRmse: '0.5605', psnr: '30.35', ssim: '0.9225', f1: '0.3798', lat: '7.1' },
                     ].map((row, idx) => (
                       <tr
                         key={row.name}

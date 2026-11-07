@@ -7,13 +7,9 @@ pnpm-lock.yaml
 pnpm-workspace.yaml
 
 # Specs and root samples
-docs/
 /docs/
-samples/
 /samples/
-reference/
 /reference/
-specs/
 /specs/
 .agent/
 .agents/
@@ -21,8 +17,6 @@ specs/
 
 # Generated Mock Assets
 frontend/public/assets/hero/source/
-frontend/public/assets/samples/
-frontend/public/assets/benchmark/
 frontend/public/fonts/
 
 # Production build outputs
