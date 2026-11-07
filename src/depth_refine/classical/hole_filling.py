@@ -121,6 +121,11 @@ def fill_depth_holes(
             m_np = (mask_clean[b, 0].detach().cpu().numpy() <= 0.5).astype(np.uint8)
             if m_np.any() and (m_np == 0).any():
                 filled_np = cv2.inpaint(d_np, m_np, inpaintRadius=4.0, flags=cv_flag)
+                # OpenCV may extrapolate a shallow value at the edge of a hole.
+                # Depth maps use meters and values below 0.3 m are invalid for
+                # this pipeline; clamp only newly filled pixels while preserving
+                # the original valid sensor measurements.
+                filled_np = np.where(m_np > 0, np.maximum(filled_np, 0.3001), filled_np)
             else:
                 filled_np = d_np
             out_list.append(torch.from_numpy(filled_np).to(device=depth.device, dtype=depth.dtype))

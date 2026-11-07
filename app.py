@@ -9,10 +9,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 from typing import Dict
 
+# Keep direct `streamlit run app.py` launches working from a source checkout.
+# Installed deployments still use the normal package metadata from pyproject.toml.
+PROJECT_SRC = Path(__file__).resolve().parent / "src"
+if str(PROJECT_SRC) not in sys.path:
+    sys.path.insert(0, str(PROJECT_SRC))
+
 import cv2
-import matplotlib.cm as cm
+from matplotlib import colormaps
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -55,7 +62,7 @@ def colorize_depth(
         valid = depth[depth > 1e-3]
         vmax = float(np.percentile(valid, 98)) if valid.size > 0 else 6.0
     norm = np.clip((depth - vmin) / max(vmax - vmin, 1e-6), 0.0, 1.0)
-    cmap = cm.get_cmap(cmap_name)
+    cmap = colormaps.get_cmap(cmap_name)
     rgb = (cmap(norm)[..., :3] * 255.0).astype(np.uint8)
     if invalid_mask is not None:
         rgb[invalid_mask] = np.array([25, 25, 30], dtype=np.uint8)
@@ -317,7 +324,7 @@ def main() -> None:
     with tab1:
         st.subheader(f"Scene `{sample['name']}` — {scale}× Depth Upsampling & Refinement")
         c1, c2, c3, c4 = st.columns(4)
-        c1.image((rgb_np * 255).astype(np.uint8), caption="High-Res RGB Guidance", use_container_width=True)
+        c1.image((rgb_np * 255).astype(np.uint8), caption="High-Res RGB Guidance", width="stretch")
         lr_up_vis = cv2.resize(
             colorize_depth(lr_np, vmin, vmax, invalid_mask=~lr_valid_np),
             (gt_np.shape[1], gt_np.shape[0]),
@@ -326,17 +333,17 @@ def main() -> None:
         c2.image(
             lr_up_vis,
             caption=f"Degraded LR Input ({lr_np.shape[1]}×{lr_np.shape[0]}, Holes & Noise)",
-            use_container_width=True,
+            width="stretch",
         )
         c3.image(
             colorize_depth(preds["bicubic"], vmin, vmax),
             caption=f"Bicubic Baseline (RMSE: {bic_row['RMSE']:.4f}m)",
-            use_container_width=True,
+            width="stretch",
         )
         c4.image(
             colorize_depth(preds["hybrid"], vmin, vmax),
             caption=f"Hybrid EG-DepthNet (RMSE: {best_row['RMSE']:.4f}m)",
-            use_container_width=True,
+            width="stretch",
         )
 
         st.markdown("#### Full Method Comparison Matrix (Classical vs. Deep vs. Hybrid)")
@@ -346,7 +353,7 @@ def main() -> None:
             m_cols[idx].image(
                 colorize_depth(preds[m_key], vmin, vmax),
                 caption=f"{METHOD_LABELS[m_key]}\nRMSE: {r_info['RMSE']:.4f}m | Edge-F1: {r_info['Edge_F1']:.3f}",
-                use_container_width=True,
+                width="stretch",
             )
 
         st.markdown("#### Internal Explainability: Learned Edge-Coherence Gate ($G_{edge}$) & Uncertainty Map")
@@ -354,17 +361,17 @@ def main() -> None:
         e1.image(
             colorize_depth(edge_gate_np, 0.0, 1.0, cmap_name="magma"),
             caption="Learned Edge-Coherence Gate G_edge (Suppresses Texture-Copying on Flat Walls)",
-            use_container_width=True,
+            width="stretch",
         )
         e2.image(
             colorize_depth(uncertainty_np, None, None, cmap_name="inferno"),
             caption="Predicted Aleatoric Uncertainty (Drives Stage-3 Bilateral Energy Fusion)",
-            use_container_width=True,
+            width="stretch",
         )
         e3.image(
             colorize_depth(gt_np, vmin, vmax),
             caption="Ground Truth High-Resolution Depth",
-            use_container_width=True,
+            width="stretch",
         )
 
     with tab2:
@@ -381,33 +388,33 @@ def main() -> None:
         zc1.image(
             cv2.resize((rgb_np[y0:y1, x0:x1] * 255).astype(np.uint8), (220, 220), interpolation=cv2.INTER_NEAREST),
             caption="RGB Patch",
-            use_container_width=True,
+            width="stretch",
         )
         zc2.image(
             cv2.resize(
                 colorize_depth(preds["nearest"][y0:y1, x0:x1], vmin, vmax), (220, 220), interpolation=cv2.INTER_NEAREST
             ),
             caption="Nearest (Blocky Artifacts)",
-            use_container_width=True,
+            width="stretch",
         )
         zc3.image(
             cv2.resize(
                 colorize_depth(preds["bicubic"][y0:y1, x0:x1], vmin, vmax), (220, 220), interpolation=cv2.INTER_NEAREST
             ),
             caption="Bicubic (Blurred Boundary)",
-            use_container_width=True,
+            width="stretch",
         )
         zc4.image(
             cv2.resize(
                 colorize_depth(preds["hybrid"][y0:y1, x0:x1], vmin, vmax), (220, 220), interpolation=cv2.INTER_NEAREST
             ),
             caption="Hybrid (Sharp Discontinuity)",
-            use_container_width=True,
+            width="stretch",
         )
         zc5.image(
             cv2.resize(colorize_depth(gt_np[y0:y1, x0:x1], vmin, vmax), (220, 220), interpolation=cv2.INTER_NEAREST),
             caption="Ground Truth Patch",
-            use_container_width=True,
+            width="stretch",
         )
 
         # 1D Cross-Section Depth Profile along row `crop_y`
@@ -440,7 +447,7 @@ def main() -> None:
             height=340,
             margin=dict(l=20, r=20, t=20, b=20),
         )
-        st.plotly_chart(fig_prof, use_container_width=True)
+        st.plotly_chart(fig_prof, width="stretch")
 
         st.markdown("#### Absolute Depth Error Heatmaps ($|\\hat{D} - D_{gt}|$, darker = lower error)")
         err_max = max(0.35, float(np.percentile(np.abs(preds["bicubic"] - gt_np), 97)))
@@ -450,7 +457,7 @@ def main() -> None:
             col_ui.image(
                 colorize_depth(err_map, 0.0, err_max, cmap_name="magma"),
                 caption=f"{METHOD_LABELS[m_key]} Error (Mean MAE: {err_map.mean():.4f}m)",
-                use_container_width=True,
+                width="stretch",
             )
 
     with tab3:
@@ -463,14 +470,14 @@ def main() -> None:
         with pc1:
             st.plotly_chart(
                 build_3d_point_cloud_figure(preds["bicubic"], rgb_np, "Bicubic Baseline (Flying Pixels at Edges)"),
-                use_container_width=True,
+                width="stretch",
             )
         with pc2:
             st.plotly_chart(
                 build_3d_point_cloud_figure(
                     preds["hybrid"], rgb_np, "Hybrid EG-DepthNet (Crisp 3D Object Boundaries)"
                 ),
-                use_container_width=True,
+                width="stretch",
             )
 
     with tab4:
@@ -494,7 +501,7 @@ def main() -> None:
             df.style.highlight_min(
                 subset=["RMSE", "MAE", "Boundary_RMSE", "Texture_Copy_Err"], color="#1b4332"
             ).highlight_max(subset=["PSNR", "SSIM", "Edge_F1", "Delta1"], color="#1b4332"),
-            use_container_width=True,
+            width="stretch",
         )
 
         bc1, bc2 = st.columns(2)
@@ -506,7 +513,7 @@ def main() -> None:
                 barmode="group",
                 title="Global vs. Boundary Error Comparison (Lower is Better ↓)",
             )
-            st.plotly_chart(fig_bar, use_container_width=True)
+            st.plotly_chart(fig_bar, width="stretch")
         with bc2:
             fig_f1 = px.bar(
                 df,
@@ -515,7 +522,7 @@ def main() -> None:
                 barmode="group",
                 title="Boundary F1 & Structural Similarity (Higher is Better ↑)",
             )
-            st.plotly_chart(fig_f1, use_container_width=True)
+            st.plotly_chart(fig_f1, width="stretch")
 
         report_json = Path("outputs/benchmark_report.json")
         if report_json.exists():
@@ -526,7 +533,7 @@ def main() -> None:
                 row = {"Dataset": item["dataset"].upper(), "Scale": f"{item['scale']}×", "Method": item["label"]}
                 row.update(item["metrics"])
                 flat_rows.append(row)
-            st.dataframe(pd.DataFrame(flat_rows), use_container_width=True)
+            st.dataframe(pd.DataFrame(flat_rows), width="stretch")
 
 
 if __name__ == "__main__":

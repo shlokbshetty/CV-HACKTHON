@@ -10,7 +10,7 @@ Comprehensive Evaluation Metrics for Edge-Preserving Depth Upsampling & Refineme
 from __future__ import annotations
 
 import time
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import torch
 import torch.nn.functional as F
@@ -168,9 +168,9 @@ def compute_depth_metrics(
 
 
 def measure_runtime_and_memory(
-    fn: Callable[[], torch.Tensor],
+    fn: Callable[[], Any],
     device: Optional[torch.device] = None,
-) -> tuple[torch.Tensor, float, float]:
+) -> tuple[Any, float, float]:
     """
     Execute reconstruction callable `fn`, measuring latency in milliseconds and peak memory in MB.
     """
@@ -193,7 +193,13 @@ def measure_runtime_and_memory(
     t0 = time.perf_counter()
     out = fn()
     latency_ms = (time.perf_counter() - t0) * 1000.0
-    # Approximate tensor footprint on CPU
-    peak_mb = float(out.numel() * out.element_size() * 8.0 / (1024.0 * 1024.0))
+    # Approximate tensor footprint on CPU. Dashboard deep/hybrid calls return
+    # a result dataclass, while classical calls return a tensor directly.
+    measured = out if isinstance(out, torch.Tensor) else next(
+        (value for value in vars(out).values() if isinstance(value, torch.Tensor)), None
+    )
+    if measured is None:
+        raise TypeError("Measured callable must return a tensor or an object containing one")
+    peak_mb = float(measured.numel() * measured.element_size() * 8.0 / (1024.0 * 1024.0))
     return out, latency_ms, max(peak_mb, 1.2)
 

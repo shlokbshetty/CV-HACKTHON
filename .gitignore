@@ -6,7 +6,7 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .data/*
-data/
+/data/
 checkpoints/
 outputs/
 *.pt
@@ -23,7 +23,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
-data/
+/data/
 checkpoints/
 outputs/
 *.pt
