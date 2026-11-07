@@ -308,7 +308,7 @@ export const WorkspaceV3: React.FC = () => {
         {/* Back Link & Benchmarks */}
         <div style={{ pointerEvents: 'auto', display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Link
-            to="/v3"
+            to="/"
             style={{
               display: 'flex',
               alignItems: 'center',
