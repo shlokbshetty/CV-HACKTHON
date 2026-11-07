@@ -152,17 +152,28 @@ def main():
         seed=42,
     )
 
+    mid_scenes = [
+        "artroom1", "artroom2", "bandsaw1", "bandsaw2",
+        "chess1", "chess2", "chess3", "curule1",
+        "curule2", "curule3", "ladder1", "ladder2",
+        "octogons1", "octogons2", "pendulum1", "pendulum2"
+    ]
+
     targets = [
         {"key": "nyuv2", "type": "dataset", "name": "nyuv2", "crop": 256, "label": "NYU Depth V2 (Indoor RGB-D)"},
         {"key": "middlebury", "type": "preset", "dir": Path("data/middleburry/data/artroom1"), "label": "Middlebury Stereo (artroom1)"},
-        {"key": "artroom1", "type": "preset", "dir": Path("data/middleburry/data/artroom1"), "label": "Art Studio & Easel (artroom1)"},
-        {"key": "bandsaw1", "type": "preset", "dir": Path("data/middleburry/data/bandsaw1"), "label": "Bandsaw Industrial Workshop (bandsaw1)"},
-        {"key": "chess1", "type": "preset", "dir": Path("data/middleburry/data/chess1"), "label": "Chessboard & Pieces (chess1)"},
-        {"key": "ladder1", "type": "preset", "dir": Path("data/middleburry/data/ladder1"), "label": "Ladder & Scaffolding (ladder1)"},
+    ]
+
+    for s in mid_scenes:
+        p_dir = Path(f"data/middleburry/data/{s}")
+        if p_dir.exists():
+            targets.append({"key": s, "type": "preset", "dir": p_dir, "label": f"Middlebury Stereo ({s})"})
+
+    targets.extend([
         {"key": "skates1", "type": "preset", "dir": Path("data/middleburry/data/skates1"), "label": "Roller Skates (skates1)"},
         {"key": "kitti", "type": "dataset", "name": "kitti", "crop": 256, "label": "KITTI Vision Suite (Outdoor LiDAR)"},
         {"key": "synthetic", "type": "dataset", "name": "synthetic", "crop": 256, "label": "3D Texture-Copy Stress Scene"},
-    ]
+    ])
 
     manifest = {}
 

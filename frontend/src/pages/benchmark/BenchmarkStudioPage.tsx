@@ -77,13 +77,26 @@ const DATASETS: Record<string, DatasetMetadata> = {
   },
 };
 
-const PRESET_SCENES = [
-  { id: 'artroom1', label: 'Art Studio & Easel (artroom1)' },
-  { id: 'bandsaw1', label: 'Bandsaw Industrial Workshop (bandsaw1)' },
-  { id: 'chess1', label: 'Chessboard & Pieces (chess1)' },
-  { id: 'ladder1', label: 'Ladder & Scaffolding (ladder1)' },
-  { id: 'skates1', label: 'Roller Skates (skates1)' },
+const MIDDLEBURY_SCENES = [
+  { id: 'artroom1', label: 'Scene 0: Art Studio & Easel (artroom1)' },
+  { id: 'artroom2', label: 'Scene 1: Art Studio Angle 2 (artroom2)' },
+  { id: 'bandsaw1', label: 'Scene 2: Bandsaw Workshop (bandsaw1)' },
+  { id: 'bandsaw2', label: 'Scene 3: Bandsaw Detail (bandsaw2)' },
+  { id: 'chess1', label: 'Scene 4: Chessboard & Pieces (chess1)' },
+  { id: 'chess2', label: 'Scene 5: Chessboard Slanted (chess2)' },
+  { id: 'chess3', label: 'Scene 6: Chessboard Top-Down (chess3)' },
+  { id: 'curule1', label: 'Scene 7: Curule Chair (curule1)' },
+  { id: 'curule2', label: 'Scene 8: Curule Detail (curule2)' },
+  { id: 'curule3', label: 'Scene 9: Curule Side View (curule3)' },
+  { id: 'ladder1', label: 'Scene 10: Ladder & Scaffolding (ladder1)' },
+  { id: 'ladder2', label: 'Scene 11: Ladder Angle 2 (ladder2)' },
+  { id: 'octogons1', label: 'Scene 12: Geometric Octogons (octogons1)' },
+  { id: 'octogons2', label: 'Scene 13: Octogons Perspective (octogons2)' },
+  { id: 'pendulum1', label: 'Scene 14: Physics Pendulum (pendulum1)' },
+  { id: 'pendulum2', label: 'Scene 15: Pendulum High-Frequency (pendulum2)' },
 ];
+
+const PRESET_SCENES = MIDDLEBURY_SCENES;
 
 const COLORMAP_OPTIONS = [
   { id: 'turbo', label: 'turbo (Default Scientific)' },
@@ -209,15 +222,35 @@ export const BenchmarkStudioPage: React.FC = () => {
       .catch(() => {});
   }, []);
 
-  // Determine active asset key
+  // Determine active asset key based on dataset and sceneIdx
   const activeAssetKey = useMemo(() => {
     if (dataset === 'custom_upload') {
       if (uploadMode === 'preset_samples') return scenePreset;
       return 'artroom1';
     }
-    if (dataset === 'middlebury') return scenePreset;
+    if (dataset === 'middlebury') {
+      const targetScene = MIDDLEBURY_SCENES[sceneIdx % MIDDLEBURY_SCENES.length]?.id;
+      return targetScene || scenePreset || 'artroom1';
+    }
     return dataset;
-  }, [dataset, uploadMode, scenePreset]);
+  }, [dataset, uploadMode, scenePreset, sceneIdx]);
+
+  const handleSceneIndexChange = (newIdx: number) => {
+    const clamped = Math.max(0, Math.min(15, isNaN(newIdx) ? 0 : newIdx));
+    setSceneIdx(clamped);
+    if (dataset === 'middlebury') {
+      const sId = MIDDLEBURY_SCENES[clamped % MIDDLEBURY_SCENES.length]?.id || 'artroom1';
+      setScenePreset(sId);
+    }
+  };
+
+  const handlePresetSelect = (presetId: string) => {
+    setScenePreset(presetId);
+    const idx = MIDDLEBURY_SCENES.findIndex((s) => s.id === presetId);
+    if (idx >= 0) {
+      setSceneIdx(idx);
+    }
+  };
 
   // Read current metrics from manifest with fallback
   const currentMetrics = useMemo(() => {
@@ -568,24 +601,6 @@ export const BenchmarkStudioPage: React.FC = () => {
             )}
           </div>
 
-          {/* Scene Index (when not custom_upload, matching app.py:825) */}
-          {dataset !== 'custom_upload' && (
-            <div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '6px' }}>
-                <span style={{ color: '#9CA3AF' }}>Scene Index</span>
-                <span style={{ color: '#3B82F6', fontWeight: 600 }}>{sceneIdx} / 15</span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={15}
-                value={sceneIdx}
-                onChange={(e) => setSceneIdx(Number(e.target.value))}
-                style={{ width: '100%', accentColor: '#3B82F6' }}
-              />
-            </div>
-          )}
-
           {/* Upsampling Factor Slider */}
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '6px' }}>
@@ -885,6 +900,131 @@ export const BenchmarkStudioPage: React.FC = () => {
 
           <div style={{ height: '1px', backgroundColor: 'rgba(255, 255, 255, 0.08)' }} />
 
+          {/* ─── SCENE SELECTOR // SCENE INDEX (matching app.py:825) ─── */}
+          {dataset !== 'custom_upload' && (
+            <div
+              style={{
+                padding: '14px',
+                borderRadius: '10px',
+                backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '10px',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <Sliders size={13} color="#3B82F6" />
+                  <span style={{ fontSize: '11px', fontWeight: 700, color: '#FFFFFF', letterSpacing: '0.04em' }}>
+                    SCENE INDEX
+                  </span>
+                </div>
+                <span
+                  style={{
+                    fontSize: '10.5px',
+                    fontWeight: 600,
+                    padding: '2px 8px',
+                    borderRadius: '999px',
+                    backgroundColor: 'rgba(59, 130, 246, 0.2)',
+                    color: '#60A5FA',
+                  }}
+                >
+                  Scene {sceneIdx} of 15
+                </span>
+              </div>
+
+              {/* Numeric Stepper Box (matching Streamlit st.sidebar.number_input) */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <button
+                  type="button"
+                  onClick={() => handleSceneIndexChange(sceneIdx - 1)}
+                  disabled={sceneIdx <= 0}
+                  style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '6px',
+                    backgroundColor: sceneIdx <= 0 ? 'rgba(255, 255, 255, 0.03)' : 'rgba(255, 255, 255, 0.08)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    color: sceneIdx <= 0 ? '#4B5563' : '#FFFFFF',
+                    fontSize: '15px',
+                    fontWeight: 700,
+                    cursor: sceneIdx <= 0 ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  title="Previous Scene Index"
+                >
+                  −
+                </button>
+
+                <input
+                  type="number"
+                  min={0}
+                  max={15}
+                  value={sceneIdx}
+                  onChange={(e) => handleSceneIndexChange(parseInt(e.target.value, 10))}
+                  style={{
+                    flex: 1,
+                    height: '32px',
+                    borderRadius: '6px',
+                    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+                    border: '1px solid rgba(59, 130, 246, 0.4)',
+                    color: '#FFFFFF',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    textAlign: 'center',
+                    outline: 'none',
+                  }}
+                />
+
+                <button
+                  type="button"
+                  onClick={() => handleSceneIndexChange(sceneIdx + 1)}
+                  disabled={sceneIdx >= 15}
+                  style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '6px',
+                    backgroundColor: sceneIdx >= 15 ? 'rgba(255, 255, 255, 0.03)' : 'rgba(255, 255, 255, 0.08)',
+                    border: '1px solid rgba(255, 255, 255, 0.15)',
+                    color: sceneIdx >= 15 ? '#4B5563' : '#FFFFFF',
+                    fontSize: '15px',
+                    fontWeight: 700,
+                    cursor: sceneIdx >= 15 ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                  title="Next Scene Index"
+                >
+                  +
+                </button>
+              </div>
+
+              {/* Range Slider for rapid scrubbing */}
+              <input
+                type="range"
+                min={0}
+                max={15}
+                value={sceneIdx}
+                onChange={(e) => handleSceneIndexChange(Number(e.target.value))}
+                style={{ width: '100%', accentColor: '#3B82F6', cursor: 'pointer' }}
+              />
+
+              {/* Active scene name feedback */}
+              {dataset === 'middlebury' && (
+                <div style={{ fontSize: '10.5px', color: '#9CA3AF', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <span>Current Scene:</span>
+                  <code style={{ color: '#10B981', fontWeight: 600 }}>{activeAssetKey}</code>
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ height: '1px', backgroundColor: 'rgba(255, 255, 255, 0.08)' }} />
+
           {/* QUANTIZATION & ACCELERATION */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: '#FFFFFF', fontSize: '12px', fontWeight: 700, letterSpacing: '0.06em' }}>
             <Zap size={14} color="#F59E0B" />
@@ -1124,7 +1264,7 @@ export const BenchmarkStudioPage: React.FC = () => {
                   <label style={{ fontSize: '12px', color: '#FFFFFF', fontWeight: 500 }}>Select Calibrated Scene:</label>
                   <select
                     value={scenePreset}
-                    onChange={(e) => setScenePreset(e.target.value)}
+                    onChange={(e) => handlePresetSelect(e.target.value)}
                     style={{
                       padding: '8px 14px',
                       borderRadius: '8px',
@@ -1232,7 +1372,7 @@ export const BenchmarkStudioPage: React.FC = () => {
                   {dataset === 'middlebury' && (
                     <select
                       value={scenePreset}
-                      onChange={(e) => setScenePreset(e.target.value)}
+                      onChange={(e) => handlePresetSelect(e.target.value)}
                       style={{
                         padding: '6px 12px',
                         borderRadius: '6px',
