@@ -232,7 +232,10 @@ class HybridReconstructor:
             d_mid = 0.5 * (d_erode + d_dilate)
             target = torch.where(d_cur <= d_mid, d_erode, d_dilate)
             d_cur = (1.0 - shock_mask * 0.85) * d_cur + (shock_mask * 0.85) * target
-        d_hybrid = torch.clamp(d_cur, min=0.05)
+
+        # 3d. Final RGB-Guided Mode Snapping & Planar Denoising (wipes out remaining flying pixels)
+        d_snapped, _ = bilateral_mode_snap_and_denoise(d_cur, rgb_hr, scale=scale)
+        d_hybrid = torch.clamp(d_snapped, min=0.05)
 
         if squeeze:
             return HybridReconstructionResult(

@@ -169,9 +169,9 @@ def build_3d_point_cloud_figure(
         gx = np.abs(np.gradient(depth, axis=1))[::stride, ::stride][valid]
         gy = np.abs(np.gradient(depth, axis=0))[::stride, ::stride][valid]
         grad_mag = np.sqrt(gx**2 + gy**2)
-        # Prune only true mid-air flying pixel bridge slopes across depth discontinuities
+        # Prune true mid-air flying pixel bridge slopes across depth discontinuities
         rel_grad = grad_mag / np.maximum(z_val, 0.1)
-        is_flying_bridge = (rel_grad > 0.40) & (grad_mag > 0.50)
+        is_flying_bridge = (rel_grad > 0.14) & (grad_mag > 0.22)
         keep = ~is_flying_bridge
         X, Y, Z = X[keep], Y[keep], Z[keep]
         c_sub = c_sub[keep]
@@ -209,6 +209,8 @@ def build_3d_point_cloud_figure(
                 colors_str.append(f"rgb({r},{g},{b})")
     else:
         c_val = (np.clip(c_sub, 0.0, 1.0) * 255).astype(int)
+        # Elevate minimum brightness slightly so dark wood floors/chair legs don't vanish into the black 3D canvas
+        c_val = np.maximum(c_val, 28)
         colors_str = [f"rgb({r},{g},{b})" for r, g, b in c_val]
 
     fig = go.Figure(
@@ -230,6 +232,10 @@ def build_3d_point_cloud_figure(
             xaxis_title="Width X (m)",
             yaxis_title="Depth into Scene (m)",
             zaxis_title="Height Up (m)",
+            bgcolor="#13151b",
+            xaxis=dict(backgroundcolor="#181a22", gridcolor="#2c2f3d", showbackground=True),
+            yaxis=dict(backgroundcolor="#181a22", gridcolor="#2c2f3d", showbackground=True),
+            zaxis=dict(backgroundcolor="#181a22", gridcolor="#2c2f3d", showbackground=True),
             aspectmode="manual",
             aspectratio=asp_ratio,
             camera=dict(
@@ -899,14 +905,14 @@ def main() -> None:
                 }[x],
             )
             filter_sky = st.checkbox(
-                "Filter Invalid Sensor / Sky Holes",
-                value=True,
-                help="Suppresses the floating sky dome in KITTI and missing sensor holes in NYUv2 so points match ground truth 1:1.",
+                "Filter Sensor Sky Holes (KITTI)",
+                value=True if dataset_choice == "kitti" else False,
+                help="Suppresses the floating sky dome in KITTI outdoor scenes.",
             )
             disconnect_edges = st.checkbox(
-                "3D Occlusion Edge Disconnection",
-                value=False,
-                help="Prunes mixed-pixel ramp points along high-gradient boundaries so foreground objects stand completely detached from background walls in 3D.",
+                "3D Occlusion Edge Disconnection (Zero Flying Pixels)",
+                value=True,
+                help="Prunes mixed-pixel ramp points along high-gradient boundaries so foreground objects stand completely detached from background walls in 3D without flying pixels.",
             )
         with pc_c3:
             stride_choice = st.select_slider(
@@ -930,14 +936,14 @@ def main() -> None:
                     build_3d_point_cloud_figure(
                         preds["bicubic"],
                         rgb_np,
-                        "Bicubic Baseline (Flying Pixels at Edges)",
-                        valid_mask=mask_to_use,
+                        "Bicubic Baseline (Notice Flying Pixels at Edges)",
+                        valid_mask=mask_to_use if dataset_choice == "kitti" else None,
                         stride=stride_choice,
                         point_size=pt_size,
                         dataset_name=dataset_choice,
                         color_mode=pc_color_mode,
                         height=520,
-                        disconnect_flying_pixels=disconnect_edges,
+                        disconnect_flying_pixels=False,
                     ),
                     use_container_width=True,
                 )
@@ -946,8 +952,8 @@ def main() -> None:
                     build_3d_point_cloud_figure(
                         preds["hybrid"],
                         rgb_np,
-                        "Hybrid EG-DepthNet (Crisp 3D Discontinuities)",
-                        valid_mask=mask_to_use,
+                        "Hybrid EG-DepthNet (Complete Surface, Crisp Discontinuities)",
+                        valid_mask=mask_to_use if dataset_choice == "kitti" else None,
                         edge_gate=edge_gate_np,
                         stride=stride_choice,
                         point_size=pt_size,
@@ -964,7 +970,7 @@ def main() -> None:
                         gt_np,
                         rgb_np,
                         "Ground Truth Target (Ideal 3D Geometry)",
-                        valid_mask=mask_to_use,
+                        valid_mask=valid_gt_np,
                         edge_gate=None,
                         stride=stride_choice,
                         point_size=pt_size,
