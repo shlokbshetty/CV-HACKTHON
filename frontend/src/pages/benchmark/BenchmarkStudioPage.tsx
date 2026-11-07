@@ -77,14 +77,14 @@ const DATASETS: Record<string, DatasetMetadata> = {
   },
 };
 
-export interface SceneInfo {
+interface SceneInfo {
   id: string;
   label: string;
   name: string;
   description: string;
 }
 
-export const DATASET_SCENES: Record<string, SceneInfo[]> = {
+const DATASET_SCENES: Record<string, SceneInfo[]> = {
   middlebury: [
     { id: 'artroom1', label: 'Scene 0: Art Studio & Easel (artroom1)', name: 'Art Studio & Easel', description: 'Complex indoor easel & fine brush textures' },
     { id: 'artroom2', label: 'Scene 1: Art Studio Angle 2 (artroom2)', name: 'Art Studio Angle 2', description: 'Secondary camera angle with deep shadows' },
