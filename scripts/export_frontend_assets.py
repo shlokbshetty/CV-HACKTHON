@@ -18,6 +18,65 @@ from depth_refine.data.dataset_registry import load_dataset, MiddleburyDataset
 from depth_refine.evaluate.metrics import compute_depth_metrics
 from depth_refine.hybrid.hybrid_pipeline import HybridReconstructor
 
+def generate_pc_buffer(depth: np.ndarray, rgb: np.ndarray, dataset_name: str, edge_gate: np.ndarray | None = None, stride: int = 2, disconnect_edges: bool = True) -> bytes:
+    H, W = depth.shape
+    yy, xx = np.meshgrid(np.arange(0, H, stride), np.arange(0, W, stride), indexing="ij")
+    z = depth[::stride, ::stride]
+    c = rgb[::stride, ::stride]
+
+    ds_lower = dataset_name.lower()
+    max_metric_depth = 80.0 if "kitti" in ds_lower else 8.0
+    valid = (z > 0.05) & (z <= max_metric_depth) & np.isfinite(z)
+
+    u = xx[valid]
+    v_coord = yy[valid]
+    z_val = z[valid]
+    c_sub = c[valid]
+
+    if "kitti" in ds_lower:
+        focal_scale = 1.85
+    elif "middlebury" in ds_lower or "artroom" in ds_lower or "chess" in ds_lower:
+        focal_scale = 1.35
+    else:
+        focal_scale = 1.15
+
+    fx = fy = float(W) * focal_scale
+    cx, cy = float(W) / 2.0, float(H) / 2.0
+
+    X = (u - cx) * z_val / fx
+    Y = z_val
+    Z = -(v_coord - cy) * z_val / fy
+
+    gx = np.abs(np.gradient(depth, axis=1))[::stride, ::stride][valid]
+    gy = np.abs(np.gradient(depth, axis=0))[::stride, ::stride][valid]
+    grad_mag = np.sqrt(gx**2 + gy**2)
+
+    rel_grad = grad_mag / np.maximum(z_val, 0.1)
+    is_flying_bridge = (rel_grad > 0.14) & (grad_mag > 0.22)
+
+    if disconnect_edges and len(z_val) > 0:
+        keep = ~is_flying_bridge
+        X = X[keep]
+        Y = Y[keep]
+        Z = Z[keep]
+        c_sub = c_sub[keep]
+        z_val = z_val[keep]
+        is_flying_bridge = is_flying_bridge[keep]
+
+    # Structure: [X, Y, Z, R, G, B, DepthVal, IsEdge]
+    N = len(X)
+    out = np.zeros((N, 8), dtype=np.float32)
+    out[:, 0] = X.astype(np.float32)
+    out[:, 1] = Y.astype(np.float32)
+    out[:, 2] = Z.astype(np.float32)
+    out[:, 3] = np.clip(c_sub[:, 0], 0.0, 1.0).astype(np.float32)
+    out[:, 4] = np.clip(c_sub[:, 1], 0.0, 1.0).astype(np.float32)
+    out[:, 5] = np.clip(c_sub[:, 2], 0.0, 1.0).astype(np.float32)
+    out[:, 6] = z_val.astype(np.float32)
+    out[:, 7] = is_flying_bridge.astype(np.float32)
+
+    return out.tobytes()
+
 def colorize_depth(
     depth: np.ndarray,
     vmin: float | None = None,
@@ -266,6 +325,14 @@ def main():
         cv2.imwrite(str(out_dir / f"{k}_patch_bicubic.png"), cv2.cvtColor(patch_bic, cv2.COLOR_RGB2BGR))
         cv2.imwrite(str(out_dir / f"{k}_patch_hybrid.png"), cv2.cvtColor(patch_hyb, cv2.COLOR_RGB2BGR))
         cv2.imwrite(str(out_dir / f"{k}_patch_gt.png"), cv2.cvtColor(patch_gt, cv2.COLOR_RGB2BGR))
+
+        # 3D Metric Point Cloud Buffers (matches app.py pinhole backprojection)
+        with open(out_dir / f"{k}_pc_bicubic.bin", "wb") as f:
+            f.write(generate_pc_buffer(preds["bicubic"], rgb_np, k, disconnect_edges=False))
+        with open(out_dir / f"{k}_pc_hybrid.bin", "wb") as f:
+            f.write(generate_pc_buffer(preds["hybrid"], rgb_np, k, edge_gate=edge_gate_np, disconnect_edges=True))
+        with open(out_dir / f"{k}_pc_gt.bin", "wb") as f:
+            f.write(generate_pc_buffer(gt_np, rgb_np, k, disconnect_edges=False))
 
         # Tab 2 Error Heatmaps
         err_max = max(0.35, float(np.percentile(np.abs(preds["bicubic"] - gt_np), 97)))

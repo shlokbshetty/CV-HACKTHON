@@ -1775,6 +1775,7 @@ export const BenchmarkStudioPage: React.FC = () => {
               {pcLayout === 'side_by_side' ? (
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '16px' }}>
                   <ThreePointCloudViewer
+                    bufferUrl={`/assets/benchmark/${activeAssetKey}_pc_bicubic.bin`}
                     depthUrl={getAsset('bicubic')}
                     rgbUrl={getAsset('rgb')}
                     label="Bicubic Baseline (Notice Flying Pixels at Edges)"
@@ -1786,6 +1787,7 @@ export const BenchmarkStudioPage: React.FC = () => {
                     height={480}
                   />
                   <ThreePointCloudViewer
+                    bufferUrl={`/assets/benchmark/${activeAssetKey}_pc_hybrid.bin`}
                     depthUrl={getAsset('hybrid')}
                     rgbUrl={getAsset('rgb')}
                     label="Hybrid EG-DepthNet (Complete Surface, Crisp Discontinuities)"
@@ -1797,6 +1799,7 @@ export const BenchmarkStudioPage: React.FC = () => {
                     height={480}
                   />
                   <ThreePointCloudViewer
+                    bufferUrl={`/assets/benchmark/${activeAssetKey}_pc_gt.bin`}
                     depthUrl={getAsset('gt')}
                     rgbUrl={getAsset('rgb')}
                     label="Ground Truth Target (Ideal 3D Geometry)"
@@ -1811,6 +1814,7 @@ export const BenchmarkStudioPage: React.FC = () => {
               ) : (
                 <div>
                   <ThreePointCloudViewer
+                    bufferUrl={`/assets/benchmark/${activeAssetKey}_pc_${pcLayout === 'hero_hybrid' ? 'hybrid' : pcLayout === 'hero_bicubic' ? 'bicubic' : 'gt'}.bin`}
                     depthUrl={pcLayout === 'hero_hybrid' ? getAsset('hybrid') : pcLayout === 'hero_bicubic' ? getAsset('bicubic') : getAsset('gt')}
                     rgbUrl={getAsset('rgb')}
                     label={
