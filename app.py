@@ -329,7 +329,7 @@ def main() -> None:
             "middlebury": "Middlebury Stereo (2001–2021)",
             "kitti": "KITTI Vision Suite (Outdoor LiDAR)",
             "synthetic": "3D Texture-Copy Stress Scene",
-            "custom_upload": "Upload Custom RGB + Depth",
+            "custom_upload": "🛰️ Upload Sensor RGB-D Capture (LiDAR / RealSense)",
         }[x],
     )
 
@@ -413,18 +413,31 @@ def main() -> None:
     )
 
     if dataset_choice == "custom_upload":
-        st.markdown("### 📸 Custom Camera & RGB-D Testing Studio")
+        st.markdown("### 🛰️ Hardware Sensor RGB-D Testing Studio")
         st.markdown(
-            "Test the trained **EG-DepthNet + Hybrid Reconstructor** on your own camera photos, phone captures, or custom RGB-D datasets."
+            "Evaluate **EG-DepthNet + Hybrid Reconstructor** on genuine captures from physical depth-sensing hardware "
+            "(LiDAR scanners, Time-of-Flight sensors, stereo depth cameras, or synthetic simulators)."
         )
 
+        with st.expander("ℹ️ How to obtain genuine RGB-D captures for this model", expanded=False):
+            st.markdown(
+                """
+                - **iPhone Pro / iPad Pro with LiDAR**: Use free iOS apps like **3D Scanner App**, **Record3D**, or **Polycam**. Export both the **Color Photo** (`.png`/`.jpg`) and the **16-bit Millimeter Depth Map** (`.png`).
+                - **Dedicated Depth Cameras**: Intel RealSense (D435/D455), Microsoft Azure Kinect, Orbbec Astra, ZED Stereo.
+                - **Robotics & Simulation Suites**: CARLA, AirSim, Isaac Sim, or Blender depth passes.
+                - **Academic RGB-D Datasets**: NYUv2, Middlebury Stereo, ScanNet, KITTI LiDAR.
+                - **Supported File Formats**:
+                  - *RGB Guidance Image*: `.png`, `.jpg`, `.jpeg`, `.webp`
+                  - *Depth Map*: 16-bit millimeter PNG (values $>20$ divided by $1000$ to meters), 32-bit floating point `.npy` (meters), or 8-bit normalized grayscale PNG.
+                """
+            )
+
         upload_mode = st.radio(
-            "Select Input Source Mode",
-            options=["photo_only", "paired_rgbd", "preset_samples"],
+            "Select Sensor Input Mode",
+            options=["paired_rgbd", "preset_samples"],
             format_func=lambda x: {
-                "photo_only": "📷 Phone / Camera Photo (RGB Only — Instant Depth Prior & Upsampling)",
-                "paired_rgbd": "🛰️ Paired RGB + Depth Map (.png, .npy, 16-bit millimeter depth)",
-                "preset_samples": "🖼️ Try Built-in Real-World Camera Presets",
+                "paired_rgbd": "📁 Upload Sensor Files (RGB Guidance Image + Real Depth Map)",
+                "preset_samples": "🎯 1-Click Hardware Sensor Demos (Calibrated Stereo & Structured Light)",
             }[x],
             horizontal=True,
         )
@@ -438,7 +451,7 @@ def main() -> None:
 
         rgb_np = None
         depth_np = None
-        sample_name = "custom_camera"
+        sample_name = "custom_sensor"
 
         PRESET_MAP = {
             "Art Studio & Easel (artroom1)": Path("data/middleburry/data/artroom1"),
@@ -449,7 +462,7 @@ def main() -> None:
         }
 
         if upload_mode == "preset_samples":
-            preset_choice = st.selectbox("Choose a Built-in Real Camera Scene", options=list(PRESET_MAP.keys()))
+            preset_choice = st.selectbox("Choose a Calibrated Hardware Sensor Scene", options=list(PRESET_MAP.keys()))
             p_dir = PRESET_MAP[preset_choice]
             rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
             disp_path = next(p_dir.glob("disp*.pfm"), None) or next(p_dir.glob("disp*.png"), None)
@@ -472,52 +485,13 @@ def main() -> None:
                         depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
             sample_name = p_dir.name
 
-        elif upload_mode == "photo_only":
-            st.info("💡 **Camera Photo Testing**: Upload any photo from your phone or camera. An intelligent, multi-cue, edge-preserving geometric depth prior will be synthesized and degraded at your selected factor (2×, 4×, 8×) to demonstrate how EG-DepthNet sharpens boundaries!")
-            up_col1, up_col2 = st.columns([2, 1])
-            with up_col1:
-                rgb_file = st.file_uploader(
-                    "Upload Camera Photo (.jpg, .png, .jpeg, .webp)",
-                    type=["png", "jpg", "jpeg", "webp"],
-                    key="camera_photo_uploader",
-                )
-            with up_col2:
-                st.markdown("**Or Test with Sample Photos:**")
-                if st.button("🛋️ Art Studio"):
-                    st.session_state["camera_preset"] = "Art Studio & Easel (artroom1)"
-                if st.button("♟️ Chessboard"):
-                    st.session_state["camera_preset"] = "Chessboard & Pieces (chess1)"
-                if st.button("🪜 Ladder & Studio"):
-                    st.session_state["camera_preset"] = "Ladder & Scaffolding (ladder1)"
-
-            if rgb_file is not None:
-                file_bytes = np.asarray(bytearray(rgb_file.read()), dtype=np.uint8)
-                bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
-                if bgr is not None:
-                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                    sample_name = Path(rgb_file.name).stem
-            elif "camera_preset" in st.session_state and st.session_state["camera_preset"] in PRESET_MAP:
-                p_dir = PRESET_MAP[st.session_state["camera_preset"]]
-                rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
-                if rgb_path and rgb_path.exists():
-                    bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
-                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                    sample_name = p_dir.name
-            else:
-                p_dir = PRESET_MAP["Art Studio & Easel (artroom1)"]
-                rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
-                if rgb_path and rgb_path.exists():
-                    bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
-                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                    sample_name = "camera_demo_art"
-
         elif upload_mode == "paired_rgbd":
-            st.info("💡 **Paired RGB-D Testing**: Upload both an RGB guidance image and its corresponding depth map (supports 8-bit, 16-bit millimeter PNG, or .npy).")
+            st.info("💡 **Paired RGB-D Input**: Upload both the RGB guidance image and its aligned depth map from any depth-recording device or simulator.")
             p_col1, p_col2 = st.columns(2)
             with p_col1:
-                rgb_file = st.file_uploader("Upload High-Res RGB Image (.png, .jpg)", type=["png", "jpg", "jpeg", "webp"], key="paired_rgb")
+                rgb_file = st.file_uploader("Upload High-Res Color Image (.png, .jpg, .jpeg, .webp)", type=["png", "jpg", "jpeg", "webp"], key="paired_rgb")
             with p_col2:
-                depth_file = st.file_uploader("Upload Aligned Depth Map (.png, .npy)", type=["png", "npy"], key="paired_depth")
+                depth_file = st.file_uploader("Upload Aligned Depth Map (.png, .npy, .npz)", type=["png", "npy", "npz"], key="paired_depth")
 
             if rgb_file is not None:
                 file_bytes = np.asarray(bytearray(rgb_file.read()), dtype=np.uint8)
@@ -529,6 +503,16 @@ def main() -> None:
             if depth_file is not None:
                 if depth_file.name.endswith(".npy"):
                     depth_np = np.load(depth_file).astype(np.float32)
+                elif depth_file.name.endswith(".npz"):
+                    npz_data = np.load(depth_file)
+                    if "depth" in npz_data:
+                        depth_np = npz_data["depth"].astype(np.float32)
+                    elif "disp" in npz_data:
+                        depth_np = 100.0 / np.maximum(npz_data["disp"].astype(np.float32), 5.0)
+                    if rgb_np is None and "rgb" in npz_data:
+                        rgb_np = npz_data["rgb"].astype(np.float32)
+                        if rgb_np.max() > 1.5:
+                            rgb_np /= 255.0
                 else:
                     d_bytes = np.asarray(bytearray(depth_file.read()), dtype=np.uint8)
                     d_raw = cv2.imdecode(d_bytes, cv2.IMREAD_UNCHANGED)
@@ -536,39 +520,26 @@ def main() -> None:
                         if d_raw.ndim == 3:
                             d_raw = d_raw[:, :, 0]
                         d_raw_f = d_raw.astype(np.float32)
-                        if d_raw_f.max() > 20.0:  # 16-bit millimeter depth
+                        if d_raw_f.max() > 20.0:  # 16-bit millimeter depth (e.g. RealSense / iPhone LiDAR)
                             depth_np = np.clip(d_raw_f / 1000.0, 0.2, 10.0)
-                        else:  # 8-bit grayscale normalized
+                        else:  # 8-bit grayscale normalized depth
                             depth_np = 0.8 + 4.2 * (d_raw_f - d_raw_f.min()) / max(float(d_raw_f.max() - d_raw_f.min()), 1e-5)
 
+            # Fallback to Demo Scene if files haven't been uploaded yet so the page never errors
             if rgb_np is None or depth_np is None:
-                st.warning("Please upload both an RGB image and a Depth map to run paired evaluation. Or click below to load a sample:")
-                if st.button("🖼️ Load Demo Paired Scene (Art Studio)"):
-                    p_dir = PRESET_MAP["Art Studio & Easel (artroom1)"]
-                    rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
-                    disp_path = next(p_dir.glob("disp*.pfm"), None) or next(p_dir.glob("disp*.png"), None)
-                    if rgb_path and rgb_path.exists():
-                        bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
-                        rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                    if disp_path and disp_path.exists():
-                        if disp_path.suffix == ".pfm":
-                            disp_np = MiddleburyDataset(scene_dirs=[])._read_disp(disp_path)
-                            disp_valid = np.nan_to_num(disp_np, nan=0.0, posinf=0.0, neginf=0.0)
-                            depth_np = 100.0 / np.maximum(disp_valid, 5.0)
-                            depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
-                        else:
-                            gray = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
-                            if gray is not None:
-                                if gray.ndim == 3:
-                                    gray = gray[:, :, 0]
-                                disp_valid = np.nan_to_num(gray.astype(np.float32), nan=0.0)
-                                depth_np = 100.0 / np.maximum(disp_valid, 5.0)
-                                depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
-                    sample_name = "demo_art_studio"
-
-        if rgb_np is None:
-            st.error("No image available. Please upload an RGB photo.")
-            return
+                st.caption("ℹ️ *Awaiting custom sensor files. Displaying real-world structured-light benchmark pair below:*")
+                p_dir = PRESET_MAP["Art Studio & Easel (artroom1)"]
+                rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
+                disp_path = next(p_dir.glob("disp*.pfm"), None) or next(p_dir.glob("disp*.png"), None)
+                if rgb_path and rgb_path.exists():
+                    bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
+                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                if disp_path and disp_path.exists():
+                    disp_np = MiddleburyDataset(scene_dirs=[])._read_disp(disp_path)
+                    disp_valid = np.nan_to_num(disp_np, nan=0.0, posinf=0.0, neginf=0.0)
+                    depth_np = 100.0 / np.maximum(disp_valid, 5.0)
+                    depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
+                sample_name = "demo_art_studio"
 
         # Resize / Center-crop cleanly to (target_res, target_res)
         h_orig, w_orig = rgb_np.shape[:2]
@@ -577,14 +548,11 @@ def main() -> None:
         rgb_cropped = rgb_np[cy - crop_dim // 2 : cy + crop_dim // 2, cx - crop_dim // 2 : cx + crop_dim // 2]
         rgb_res = cv2.resize(rgb_cropped, (target_res, target_res))
 
-        if depth_np is not None:
-            dh_orig, dw_orig = depth_np.shape[:2]
-            d_dim = min(dh_orig, dw_orig)
-            dcy, dcx = dh_orig // 2, dw_orig // 2
-            d_cropped = depth_np[dcy - d_dim // 2 : dcy + d_dim // 2, dcx - d_dim // 2 : dcx + d_dim // 2]
-            depth_res = cv2.resize(d_cropped, (target_res, target_res), interpolation=cv2.INTER_NEAREST)
-        else:
-            depth_res = generate_camera_depth_prior(rgb_res)
+        dh_orig, dw_orig = depth_np.shape[:2]
+        d_dim = min(dh_orig, dw_orig)
+        dcy, dcx = dh_orig // 2, dw_orig // 2
+        d_cropped = depth_np[dcy - d_dim // 2 : dcy + d_dim // 2, dcx - d_dim // 2 : dcx + d_dim // 2]
+        depth_res = cv2.resize(d_cropped, (target_res, target_res), interpolation=cv2.INTER_NEAREST)
 
         rgb_t = torch.from_numpy(rgb_res.transpose(2, 0, 1)).float()
         depth_t = torch.from_numpy(depth_res[None, ...]).float()
