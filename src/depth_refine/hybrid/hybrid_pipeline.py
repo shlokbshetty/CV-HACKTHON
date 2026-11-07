@@ -221,14 +221,18 @@ class HybridReconstructor:
         # Boundary regions (edge_gate -> 1) retain 100% of the sharp neural EG-DepthNet step edge without cross-boundary smoothing!
         d_fused = (1.0 - edge_gate) * d_planar + edge_gate * d_deep
 
-        # 3c. Edge-Gated Morphological Shock Filter (snaps 1-px boundary ramps to crisp step discontinuities)
-        d_erode = -F.max_pool2d(-d_fused, kernel_size=3, stride=1, padding=1)
-        d_dilate = F.max_pool2d(d_fused, kernel_size=3, stride=1, padding=1)
-        d_mid_local = 0.5 * (d_erode + d_dilate)
-        shock_target = torch.where(d_fused <= d_mid_local, d_erode, d_dilate)
-        shock_gate = torch.clamp((edge_gate - 0.40) / 0.60, min=0.0, max=1.0) * 0.30
-        d_hybrid = (1.0 - shock_gate) * d_fused + shock_gate * shock_target
-        d_hybrid = torch.clamp(d_hybrid, min=0.05)
+        # 3c. Multi-Scale Edge-Gated Shock Filter (snaps slanted boundary ramps into crisp 1-pixel step discontinuities)
+        # Prevents flying pixels bridging foreground and background objects in 3D point clouds.
+        d_cur = d_fused
+        shock_mask = torch.clamp((edge_gate - 0.35) / 0.45, min=0.0, max=1.0)
+        for k in (3, 5):
+            pad = k // 2
+            d_erode = -F.max_pool2d(-d_cur, kernel_size=k, stride=1, padding=pad)
+            d_dilate = F.max_pool2d(d_cur, kernel_size=k, stride=1, padding=pad)
+            d_mid = 0.5 * (d_erode + d_dilate)
+            target = torch.where(d_cur <= d_mid, d_erode, d_dilate)
+            d_cur = (1.0 - shock_mask * 0.85) * d_cur + (shock_mask * 0.85) * target
+        d_hybrid = torch.clamp(d_cur, min=0.05)
 
         if squeeze:
             return HybridReconstructionResult(

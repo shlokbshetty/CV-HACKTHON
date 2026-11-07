@@ -77,6 +77,7 @@ def build_3d_point_cloud_figure(
     color_mode: str = "rgb",
     depth_clip_max: float | None = None,
     height: int = 500,
+    disconnect_flying_pixels: bool = False,
 ) -> go.Figure:
     """Create an interactive 3D RGB-colored point cloud in Plotly with metric pinhole camera geometry."""
     H, W = depth.shape
@@ -127,6 +128,19 @@ def build_3d_point_cloud_figure(
     X = (u - cx) * z_val / fx
     Y = z_val
     Z = -(v_coord - cy) * z_val / fy
+
+    if disconnect_flying_pixels and len(z_val) > 0:
+        gx = np.abs(np.gradient(depth, axis=1))[::stride, ::stride][valid]
+        gy = np.abs(np.gradient(depth, axis=0))[::stride, ::stride][valid]
+        grad_mag = np.sqrt(gx**2 + gy**2)
+        thresh = float(np.percentile(grad_mag, 92)) if grad_mag.size > 0 else 1.0
+        keep = grad_mag < thresh
+        X, Y, Z = X[keep], Y[keep], Z[keep]
+        c_sub = c_sub[keep]
+        z_val = z_val[keep]
+        valid_subset = keep
+    else:
+        valid_subset = np.ones(len(z_val), dtype=bool)
 
     # Color mapping
     if color_mode == "depth":
@@ -791,6 +805,11 @@ def main() -> None:
                 value=True,
                 help="Suppresses the floating sky dome in KITTI and missing sensor holes in NYUv2 so points match ground truth 1:1.",
             )
+            disconnect_edges = st.checkbox(
+                "3D Occlusion Edge Disconnection",
+                value=False,
+                help="Prunes mixed-pixel ramp points along high-gradient boundaries so foreground objects stand completely detached from background walls in 3D.",
+            )
         with pc_c3:
             stride_choice = st.select_slider(
                 "Point Cloud Density",
@@ -820,6 +839,7 @@ def main() -> None:
                         dataset_name=dataset_choice,
                         color_mode=pc_color_mode,
                         height=520,
+                        disconnect_flying_pixels=disconnect_edges,
                     ),
                     use_container_width=True,
                 )
@@ -835,6 +855,7 @@ def main() -> None:
                         dataset_name=dataset_choice,
                         color_mode=pc_color_mode,
                         height=520,
+                        disconnect_flying_pixels=disconnect_edges,
                     ),
                     use_container_width=True,
                 )
@@ -850,6 +871,7 @@ def main() -> None:
                         dataset_name=dataset_choice,
                         color_mode=pc_color_mode,
                         height=520,
+                        disconnect_flying_pixels=disconnect_edges,
                     ),
                     use_container_width=True,
                 )
@@ -876,6 +898,7 @@ def main() -> None:
                     dataset_name=dataset_choice,
                     color_mode=pc_color_mode,
                     height=680,
+                    disconnect_flying_pixels=disconnect_edges,
                 ),
                 use_container_width=True,
             )
