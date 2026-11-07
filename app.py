@@ -22,7 +22,7 @@ import streamlit as st
 import torch
 
 from depth_refine.classical.filters import compute_spatial_gradients, reconstruct_classical
-from depth_refine.data.dataset_registry import load_dataset
+from depth_refine.data.dataset_registry import MiddleburyDataset, load_dataset
 from depth_refine.data.degradation import DegradationConfig, degrade_depth
 from depth_refine.evaluate.benchmark_runner import ALL_METHODS, METHOD_LABELS
 from depth_refine.evaluate.metrics import compute_depth_metrics, measure_runtime_and_memory

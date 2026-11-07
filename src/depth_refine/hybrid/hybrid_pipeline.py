@@ -206,34 +206,24 @@ class HybridReconstructor:
         d_prior = model_out.depth_prior if model_out.depth_prior is not None else d_mask_bic
         f_vis = model_out.feature_vis if model_out.feature_vis is not None else edge_gate
 
-        # --- STAGE 3: Iterative Back-Projection (IBP) Sensor Consistency & Boundary-Locked Anisotropic Diffusion ---
+        # --- STAGE 3: Boundary-Locked Anisotropic Diffusion & Iterative Back-Projection (IBP) ---
         disc_lr = detect_edges_and_discontinuities(depth_filled_lr, rgb_lr)
         interior_valid_lr = mask_clean_lr * (1.0 - disc_lr.coherence_gate)
         conf_weight = torch.clamp(1.0 / (1.0 + uncertainty * 2.0), min=0.15, max=0.55)
-        bp_gain = 0.22 if scale <= 2 else 0.35
+        bp_gain = 0.25 if scale <= 2 else 0.35
 
-        # 3a. 2-Step Iterative Back-Projection (IBP) to eliminate low-frequency sensor drift
-        d_anchored = d_deep.clone()
-        for _ in range(2):
-            pred_lr = F.adaptive_avg_pool2d(d_anchored, depth_lr.shape[-2:])
-            residual_lr = (depth_clean_lr - pred_lr) * interior_valid_lr
-            residual_hr = F.interpolate(residual_lr, size=(H, W), mode="bilinear", align_corners=False)
-            d_anchored = d_anchored + bp_gain * conf_weight * (1.0 - edge_gate) * residual_hr
-
-        # 3b. Dual-Stream Boundary-Preserving Fusion:
-        # Planar Stream: Texture-suppressed guided filter smooths planar sensor noise & wallpaper bleed
+        # 3a. Dual-Stream Boundary-Preserving Planar Denoising:
         d_planar = guided_filter(
-            d_anchored,
+            d_deep,
             rgb_hr,
-            radius=max(3, scale),
+            radius=max(2, scale),
             eps=1e-4,
             texture_suppression=True,
         )
+        planar_blend = 0.35 if scale <= 2 else 0.65
+        d_fused = (1.0 - edge_gate) * (planar_blend * d_planar + (1.0 - planar_blend) * d_deep) + edge_gate * d_deep
 
-        # Dynamic Edge-Coherence Fusion:
-        d_fused = (1.0 - edge_gate) * d_planar + edge_gate * d_deep
-
-        # 3c. 3-Step Boundary-Locked Anisotropic Diffusion restricted to dilated discontinuity mask
+        # 3b. 3-Step Boundary-Locked Anisotropic Diffusion restricted to dilated discontinuity mask
         # Eliminates the (b) Per-image optimized halo problem while locking step transitions
         dilated_disc = F.max_pool2d((edge_gate > 0.25).to(d_fused.dtype), kernel_size=5, stride=1, padding=2)
         d_diff = d_fused.clone()
@@ -241,6 +231,7 @@ class HybridReconstructor:
         patches_rgb3 = F.unfold(pad_rgb3, kernel_size=3).view(rgb_hr.shape[0], 3, 9, H, W)
         c_dist3 = ((patches_rgb3 - rgb_hr.unsqueeze(2)) ** 2).mean(dim=1)
         w_rgb3 = torch.exp(-c_dist3 / (2.0 * (0.025**2)))
+        diff_alpha = 0.35 if scale <= 2 else 0.65
         for _ in range(3):
             pad_d3 = F.pad(d_diff, (1, 1, 1, 1), mode="replicate")
             patches_d3 = F.unfold(pad_d3, kernel_size=3).view(d_diff.shape[0], 9, H, W)
@@ -249,22 +240,34 @@ class HybridReconstructor:
             d_step = (patches_d3 * w_aniso).sum(dim=1, keepdim=True) / torch.clamp(
                 w_aniso.sum(dim=1, keepdim=True), min=1e-6
             )
-            d_diff = dilated_disc * d_step + (1.0 - dilated_disc) * d_diff
+            d_diff = (dilated_disc * diff_alpha) * d_step + (1.0 - dilated_disc * diff_alpha) * d_diff
 
-        # 3d. Multi-Scale Edge-Gated Shock Filter (snaps slanted boundary ramps into crisp 1-pixel step discontinuities)
+        # 3c. Multi-Scale Edge-Gated Shock Filter & Mode Snapping
         d_cur = d_diff
-        shock_mask = torch.clamp((edge_gate - 0.35) / 0.45, min=0.0, max=1.0)
+        shock_gain = 0.25 if scale <= 2 else 0.75
+        shock_mask = torch.clamp((edge_gate - 0.35) / 0.45, min=0.0, max=1.0) * shock_gain
         for k in (3, 5):
             pad = k // 2
             d_erode = -F.max_pool2d(-d_cur, kernel_size=k, stride=1, padding=pad)
             d_dilate = F.max_pool2d(d_cur, kernel_size=k, stride=1, padding=pad)
             d_mid = 0.5 * (d_erode + d_dilate)
             target = torch.where(d_cur <= d_mid, d_erode, d_dilate)
-            d_cur = (1.0 - shock_mask * 0.85) * d_cur + (shock_mask * 0.85) * target
+            d_cur = (1.0 - shock_mask) * d_cur + shock_mask * target
 
-        # 3e. Final RGB-Guided Mode Snapping & Planar Denoising (wipes out remaining flying pixels)
-        d_snapped, _ = bilateral_mode_snap_and_denoise(d_cur, rgb_hr, scale=scale)
-        d_hybrid = torch.clamp(d_snapped, min=0.05)
+        if scale >= 4:
+            d_snapped, _ = bilateral_mode_snap_and_denoise(d_cur, rgb_hr, scale=scale)
+        else:
+            d_snapped = d_cur
+
+        # 3d. Final 2-Step Iterative Back-Projection (IBP) to anchor valid low-res sensor measurements
+        d_anchored = d_snapped
+        for _ in range(2):
+            pred_lr = F.adaptive_avg_pool2d(d_anchored, depth_lr.shape[-2:])
+            residual_lr = (depth_clean_lr - pred_lr) * interior_valid_lr
+            residual_hr = F.interpolate(residual_lr, size=(H, W), mode="bilinear", align_corners=False)
+            d_anchored = d_anchored + bp_gain * conf_weight * (1.0 - edge_gate) * residual_hr
+
+        d_hybrid = torch.clamp(d_anchored, min=0.05)
 
         if squeeze:
             return HybridReconstructionResult(

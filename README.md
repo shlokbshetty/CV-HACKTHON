@@ -45,63 +45,51 @@ flowchart LR
 
 ---
 
-## Supported Datasets (NYUv2, Middlebury 2001–2021, KITTI)
+## Supported Local Datasets (`data/`)
 
-| Dataset | Editions / Subsets Supported | Size | Role |
-| :--- | :--- | :---: | :--- |
-| **NYU Depth V2** | Official Labeled `.mat` (`nyu_depth_v2_labeled.mat`: 1,449 aligned RGB + inpainted GT + raw Kinect depth with holes) | ~2.8 GB | Primary Multi-Scale Training ($2\times, 4\times, 8\times$) & Indoor Benchmark |
-| **Middlebury Stereo** | **2001** (`Venus`, `Sawtooth`, `Bull`), **2003** (`Cones`, `Teddy`), **2005** (`Art`, `Books`, `Dolls`, `Laundry`, `Moebius`, `Reindeer`), **2006** (`Aloe`, `Bowling1`, `Flowerpots`), **2014** (`Adirondack`, `Jadeplant` `.pfm` sub-pixel GT), **2021 Mobile** (`artroom1` `.pfm`) | ~150 MB | Zero-Shot Sub-Pixel Discontinuity & Boundary Benchmark |
-| **KITTI Vision Suite** | Depth Completion Validation Selection (Sparse 64-beam Velodyne LiDAR + Semi-Dense GT + RGB) | ~650 MB | Zero-Shot Outdoor Sparse-to-Dense Benchmark |
+The datasets are stored locally on the system under `data/` and loaded directly with in-RAM caching:
+
+| Dataset | Local Path | Details | Role |
+| :--- | :--- | :--- | :--- |
+| **NYU Depth V2** | `data/nyuv2/nyu_depth_v2_labeled.mat` | Official Labeled `.mat` (1,449 aligned RGB + inpainted GT + raw Kinect depth; strict 795 train / 654 test split) | Primary Multi-Scale Training ($2\times, 4\times, 8\times$) & Indoor Benchmark |
+| **Middlebury Stereo** | `data/middleburry/data/` | High-resolution stereo scenes (`2001`–`2021`, sub-pixel `.pfm`/`.png` GT) | Zero-Shot Sub-Pixel Discontinuity & Boundary Benchmark |
+| **KITTI Vision Suite** | `data/kitti/depth_selection/val_selection_cropped/` | Outdoor Velodyne LiDAR + Semi-Dense GT + RGB validation suite | Zero-Shot Outdoor Sparse-to-Dense Benchmark |
 
 ---
 
-## Teammate's RTX 5060 (8GB VRAM, 24GB RAM) Training Guide
+## Teammate's RTX 5060 (8GB VRAM, 24GB RAM) Training & Execution Guide
 
-Your friend's laptop (**RTX 5060 8GB VRAM + 24GB System RAM**) can train the full multi-scale model at maximum speed using native Blackwell `bfloat16` Mixed Precision and full in-RAM dataset caching:
+Your friend's laptop (**RTX 5060 8GB VRAM + 24GB System RAM**) runs the full multi-scale training and evaluation directly from the local `data/` directory using native Blackwell `bfloat16` Mixed Precision:
 
-### Step 1: Install Prerequisites on the RTX 5060 Laptop
-1. Ensure **NVIDIA Driver >= 572.xx** is installed (`nvidia-smi`).
-2. Install **uv** (fast Python environment manager):
-   ```powershell
-   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-   ```
-
-### Step 2: Clone Repo & Set Up Environment
+### Step 1: Pull Latest Changes & Set Up Environment
 ```powershell
-git clone <YOUR_GITHUB_REPO_URL>
-cd CV-HACKTHON
+git pull origin testing
 uv venv --python 3.12
 uv pip install --extra-index-url https://download.pytorch.org/whl/cu128 -e .
 ```
 *(Note: Use `cu128` on RTX 5060 Blackwell GPUs, or `cu124` on RTX 40-series GPUs).*
 
-### Step 3: Download the Datasets (~3.0 GB total)
-```powershell
-# Downloads Middlebury (2005/2006/2014/2021), KITTI validation cache, and full 2.8GB NYU Depth V2 .mat:
-uv run python scripts/download_datasets.py --dataset all --full-nyuv2-mat
-```
-
-### Step 4: Train the SOTA Model on RTX 5060
+### Step 2: Train the Model on RTX 5060
 ```powershell
 uv run python scripts/train.py --config configs/rtx5060_nyuv2.yaml
 ```
-- Automatically caches NYUv2 in the **24GB System RAM** for zero disk I/O wait.
-- Uses `bfloat16` AMP across $2\times, 4\times, 8\times$ scales with **Exponential Moving Average (EMA)** weights.
+- Automatically caches local NYUv2 scenes in the **24GB System RAM** for zero disk I/O wait.
+- Uses `bfloat16` AMP across $2\times, 4\times, 8\times$ scales with **Exponential Moving Average (EMA)** weights and early stopping.
 - Saves the best weights to `checkpoints/eg_depthnet_best.pt`.
 
-### Step 5: Run Full Evaluation, Ablation Study & Launch the Interactive Web App
+### Step 3: Run Full Evaluation, Ablation Study & Launch the Interactive Web App
 ```powershell
-# Generate Markdown & JSON Benchmark Reports across 2x, 4x, 8x:
+# 1. Re-run benchmark tables across NYUv2, Middlebury, and KITTI (2x, 4x, 8x):
 uv run python scripts/evaluate.py --datasets nyuv2 middlebury kitti --scales 2 4 8
 
-# Run 8-Stage Controlled Ablation Study (A1 -> A8):
+# 2. Run the 8-stage controlled ablation study (saves outputs/ablation_report.md):
 uv run python scripts/run_ablation.py
 
-# Launch Interactive Streamlit Dashboard (2D/3D Point Cloud + Boundary Inspector):
+# 3. Launch the Streamlit application:
 uv run streamlit run app.py
 ```
 
-### Step 6: Public Deployment (Streamlit Community Cloud / HuggingFace Spaces / Docker)
+### Step 4: Public Deployment (Streamlit Community Cloud / HuggingFace Spaces / Docker)
 - **Streamlit Community Cloud (1-Click Public URL)**:
   1. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub.
   2. Select repository `shlokbshetty/CV-HACKTHON`, branch `main`, and main file path `app.py`.
@@ -120,25 +108,28 @@ Evaluated across **Middlebury (2001–2021)**, **NYU Depth V2**, and **KITTI** a
 
 | Dataset | Scale | Method | RMSE (m) ↓ | Boundary RMSE (m) ↓ | PSNR (dB) ↑ | SSIM ↑ | Edge F1 ↑ | Latency (ms) ↓ |
 | :--- | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **NYU Depth V2** | 2× | Bicubic Interp. | 0.3247 | 0.9310 | 24.74 | 0.8934 | 0.5273 | 8.5 ms |
-| | 2× | Mask-Bicubic (Stage 1) | 0.1635 | 0.4773 | 30.90 | 0.9686 | 0.7517 | 38.2 ms |
-| | 2× | **Self-Distilled Hybrid (Stage 2)** | **0.1162** | **0.3169** | **34.03** | **0.9839** | **0.8707** | 114.5 ms |
-| | 4× | Bicubic Interp. | 0.5575 | 1.1746 | 19.89 | 0.8136 | 0.3949 | 8.9 ms |
-| | 4× | Mask-Bicubic (Stage 1) | 0.4187 | 0.7921 | 22.34 | 0.9066 | 0.6140 | 44.8 ms |
-| | 4× | **Self-Distilled Hybrid (Stage 2)** | **0.3727** | **0.5787** | **23.35** | **0.9420** | **0.8119** | 174.3 ms |
-| | 8× | Bicubic Interp. | 0.9863 | 1.5332 | 15.02 | 0.7968 | 0.1454 | 9.1 ms |
-| | 8× | **Self-Distilled Hybrid (Stage 2)** | **0.9753** | **1.3994** | **15.28** | **0.8568** | **0.6886** | 191.4 ms |
-| **Middlebury** | 2× | Bicubic Interp. | 0.3470 | 0.7872 | 25.27 | 0.9194 | 0.3885 | 11.7 ms |
-| | 2× | Mask-Bicubic (Stage 1) | 0.3345 | 0.7423 | 26.34 | 0.9415 | 0.6875 | 52.5 ms |
-| | 2× | **Self-Distilled Hybrid (Stage 2)** | **0.3341** | **0.7357** | **26.53** | **0.9439** | **0.7218** | 116.0 ms |
-| | 4× | Bicubic Interp. | 0.4067 | 0.8773 | 23.47 | 0.9028 | 0.2400 | 8.9 ms |
-| | 4× | Mask-Bicubic (Stage 1) | 0.3907 | 0.8353 | 24.28 | 0.9235 | 0.5101 | 43.4 ms |
-| | 4× | **Self-Distilled Hybrid (Stage 2)** | **0.3880** | **0.8236** | **24.45** | **0.9279** | **0.5857** | 190.2 ms |
-| **KITTI LiDAR** | 4× | Bicubic Interp. | 0.5142 | 1.0004 | 20.46 | 0.8540 | 0.3439 | 12.3 ms |
-| | 4× | Mask-Bicubic (Stage 1) | 0.4492 | 0.7644 | 21.63 | 0.9171 | 0.6430 | 53.7 ms |
-| | 4× | **Self-Distilled Hybrid (Stage 2)** | **0.4298** | **0.6380** | **21.99** | **0.9435** | **0.8687** | 213.3 ms |
-| | 8× | Bicubic Interp. | 0.6348 | 1.0913 | 18.72 | 0.8421 | 0.1416 | 15.9 ms |
-| | 8× | **Self-Distilled Hybrid (Stage 2)** | **0.5327** | **0.7459** | **20.21** | **0.9237** | **0.8501** | 254.5 ms |
+| **NYU Depth V2** | 2× | Bicubic Interp. | 0.3263 | 0.9352 | 24.69 | 0.8933 | 0.5277 | 9.6 ms |
+| | 2× | Mask-Bicubic (Stage 1) | 0.1657 | 0.4823 | 30.79 | 0.9684 | 0.7528 | 37.2 ms |
+| | 2× | **Self-Distilled Hybrid (Stage 2)** | **0.1302** | **0.3694** | **33.05** | **0.9786** | **0.8351** | 109.0 ms |
+| | 4× | Bicubic Interp. | 0.5603 | 1.1786 | 19.85 | 0.8129 | 0.3929 | 11.2 ms |
+| | 4× | Mask-Bicubic (Stage 1) | 0.4470 | 0.8284 | 21.81 | 0.9050 | 0.6159 | 51.0 ms |
+| | 4× | **Self-Distilled Hybrid (Stage 2)** | **0.4037** | **0.6244** | **22.68** | **0.9399** | **0.8127** | 192.5 ms |
+| | 8× | Bicubic Interp. | 0.9697 | 1.5177 | 15.15 | 0.7965 | 0.1483 | 9.7 ms |
+| | 8× | **Self-Distilled Hybrid (Stage 2)** | **0.9031** | **1.3148** | **15.75** | **0.8685** | **0.6637** | 171.8 ms |
+| **Middlebury** | 2× | Bicubic Interp. | 0.3468 | 0.7865 | 25.29 | 0.9195 | 0.3891 | 13.6 ms |
+| | 2× | Mask-Bicubic (Stage 1) | 0.3337 | 0.7410 | 26.37 | 0.9417 | 0.6854 | 50.5 ms |
+| | 2× | **Self-Distilled Hybrid (Stage 2)** | **0.3324** | **0.7344** | **26.56** | **0.9438** | **0.7163** | 142.0 ms |
+| | 4× | Bicubic Interp. | 0.4074 | 0.8784 | 23.44 | 0.9027 | 0.2428 | 13.2 ms |
+| | 4× | Mask-Bicubic (Stage 1) | 0.3928 | 0.8390 | 24.15 | 0.9233 | 0.5145 | 54.0 ms |
+| | 4× | **Self-Distilled Hybrid (Stage 2)** | **0.3899** | **0.8269** | **24.33** | **0.9277** | **0.5833** | 202.7 ms |
+| **KITTI LiDAR** | 2× | Bicubic Interp. | 0.2269 | 0.7613 | 27.49 | 0.9227 | 0.5463 | 7.4 ms |
+| | 2× | Mask-Bicubic (Stage 1) | 0.1084 | 0.3685 | 34.36 | 0.9815 | 0.7794 | 30.4 ms |
+| | 2× | **Self-Distilled Hybrid (Stage 2)** | **0.0777** | **0.2563** | **37.66** | **0.9886** | **0.9154** | 97.4 ms |
+| | 4× | Bicubic Interp. | 0.4386 | 0.9550 | 21.75 | 0.8605 | 0.3794 | 9.2 ms |
+| | 4× | Mask-Bicubic (Stage 1) | 0.3568 | 0.6824 | 23.46 | 0.9348 | 0.6616 | 43.0 ms |
+| | 4× | **Self-Distilled Hybrid (Stage 2)** | **0.3327** | **0.5378** | **24.05** | **0.9616** | **0.9178** | 188.1 ms |
+| | 8× | Bicubic Interp. | 0.6013 | 1.0975 | 19.14 | 0.8440 | 0.1498 | 9.9 ms |
+| | 8× | **Self-Distilled Hybrid (Stage 2)** | **0.4682** | **0.7348** | **21.31** | **0.9306** | **0.8403** | 176.5 ms |
 
 Full multi-dataset report: [outputs/benchmark_report.md](outputs/benchmark_report.md)  
 Hackathon Evaluation Submission: [`eval_P4_TeamID.md`](./eval_P4_TeamID.md)
@@ -152,15 +143,15 @@ CV-HACKTHON/
 ├── configs/
 │   └── rtx5060_nyuv2.yaml            # Tuned training config for RTX 5060 (8GB VRAM, 24GB RAM)
 ├── src/depth_refine/
-│   ├── data/                         # Deep Module 1: Dataset Registry (NYUv2, Middlebury, KITTI) & Sensor Degradation
-│   ├── classical/                    # Deep Module 2: Nearest/Bilinear/Bicubic, Telea/Colorization, JBF, Guided Filter
-│   ├── models/                       # Deep Module 3: EG-DepthNet (EGCA + ASPN) & GeometryAwareDepthLoss
-│   ├── hybrid/                       # Deep Module 4: 3-Stage Hybrid Depth Reconstruction Pipeline
-│   └── evaluate/                     # Deep Module 5: RMSE, MAE, PSNR, SSIM, Boundary-RMSE, Edge-F1, Latency, VRAM
+│   ├── data/                         # Deep Module 1: Local Dataset Registry (NYUv2, Middlebury, KITTI) & Sensor Degradation
+│   ├── classical/                    # Deep Module 2: Nearest/Bilinear/Bicubic, Mask-Bicubic Stage 1, JBF, Guided Filter
+│   ├── models/                       # Deep Module 3: EG-DepthNet (LoftUp Coord Attention + PatchRefiner Prior) & DSD Loss
+│   ├── hybrid/                       # Deep Module 4: 2-Stage Self-Distilled Hybrid Depth Reconstruction Pipeline
+│   └── evaluate/                     # Deep Module 5: RMSE, MAE, PSNR, SSIM, Boundary-RMSE, DBE, Edge-F1, Latency, VRAM
 ├── scripts/
-│   ├── download_datasets.py          # Automated resumable dataset downloader
-│   ├── train.py                      # Multi-scale AMP + EMA training script
-│   └── evaluate.py                   # Quantitative benchmark runner
+│   ├── train.py                      # Multi-scale AMP + EMA + DSD Self-Distillation training script
+│   ├── evaluate.py                   # Quantitative multi-dataset benchmark runner
+│   └── run_ablation.py               # 8-stage controlled ablation study runner
 ├── tests/                            # Automated unit & integration test suite
-└── app.py                            # Deployed Streamlit application with 3D Point Cloud Viewer
+└── app.py                            # Deployed Streamlit application (PatchRefiner 5-View + LoftUp Progression + 3D Viewer)
 ```
