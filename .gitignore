@@ -17,11 +17,16 @@ docs/
 /docs/
 samples/
 /samples/
+reference/
+/reference/
+specs/
+/specs/
 .agent/
 .agents/
 *.webp
 frontend/public/assets/hero/
 frontend/public/assets/samples/
+frontend/public/assets/benchmark/
 frontend/public/fonts/
 .venv/
 __pycache__/

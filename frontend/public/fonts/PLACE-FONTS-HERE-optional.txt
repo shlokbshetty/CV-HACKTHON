@@ -1,2 +1,0 @@
-Optional: put General Sans (or Switzer) font files from Fontshare here (woff2 preferred).
-If this folder has no font files, the agent will use Geist or Inter Tight via fontsource instead.
