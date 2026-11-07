@@ -200,15 +200,16 @@ def degrade_depth(
         depth_lr = depth_lr + noise * config.noise_std * valid_mask_lr
 
     # 4. Outlier multipath reflection / specular spikes
+    max_d = float(d_gt_valid.max().item()) if (valid_mask_gt > 0.5).any() else 10.0
     if config.outlier_prob > 0.0:
         if generator is not None:
             outlier_mask = (torch.rand(valid_mask_lr.shape, generator=generator, device=valid_mask_lr.device) < config.outlier_prob).float()
         else:
             outlier_mask = (torch.rand_like(valid_mask_lr) < config.outlier_prob).float()
-        spike_val = 8.5
+        spike_val = max(8.5, max_d * 1.1)
         depth_lr = depth_lr * (1.0 - outlier_mask) + outlier_mask * spike_val
 
-    depth_lr = torch.clamp(depth_lr, min=0.05, max=10.0) * valid_mask_lr
+    depth_lr = torch.clamp(depth_lr, min=0.05, max=max(10.0, max_d * 1.05)) * valid_mask_lr
 
     if is_3d:
         depth_lr = depth_lr.squeeze(0)

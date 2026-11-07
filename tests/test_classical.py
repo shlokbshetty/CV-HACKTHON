@@ -73,3 +73,19 @@ def test_edge_aware_filters_and_texture_suppression() -> None:
         rec = reconstruct_classical(depth[:, ::4, ::4], rgb_hr=rgb, scale=4, method=m)
         assert rec.shape == (1, 64, 64)
 
+
+def test_normalized_convolution_prevents_zero_bleeding() -> None:
+    # 32x32 plane with depth 3.0m and a 10x10 zero hole in the corner
+    depth = torch.full((1, 1, 32, 32), 3.0)
+    depth[:, :, :10, :10] = 0.0
+    valid_mask = (depth > 0.5).float()
+    rgb = torch.full((1, 3, 32, 32), 0.5)
+
+    gf_out = guided_filter(depth, rgb, radius=4, valid_mask=valid_mask)
+    jbf_out = joint_bilateral_filter(depth, rgb, kernel_size=5, valid_mask=valid_mask)
+
+    # Valid pixel right next to the hole (e.g. at (11, 11)) must not be dragged down by zero hole
+    assert float(gf_out[0, 0, 11, 11]) > 2.85
+    assert float(jbf_out[0, 0, 11, 11]) > 2.85
+
+

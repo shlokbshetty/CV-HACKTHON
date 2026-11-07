@@ -22,7 +22,7 @@ import streamlit as st
 import torch
 
 from depth_refine.classical.filters import compute_spatial_gradients, reconstruct_classical
-from depth_refine.data.dataset_registry import load_dataset
+from depth_refine.data.dataset_registry import MiddleburyDataset, load_dataset
 from depth_refine.data.degradation import DegradationConfig, degrade_depth
 from depth_refine.evaluate.benchmark_runner import ALL_METHODS, METHOD_LABELS
 from depth_refine.evaluate.metrics import compute_depth_metrics, measure_runtime_and_memory
@@ -36,7 +36,7 @@ st.set_page_config(
 
 
 @st.cache_resource
-def get_hybrid_engine() -> HybridReconstructor:
+def get_hybrid_engine(ckpt_mtime: float = 0.0) -> HybridReconstructor:
     ckpt = Path("checkpoints/eg_depthnet_best.pt")
     return HybridReconstructor(checkpoint_path=ckpt if ckpt.exists() else None)
 
@@ -47,22 +47,73 @@ def colorize_depth(
     vmax: float | None = None,
     cmap_name: str = "turbo",
     invalid_mask: np.ndarray | None = None,
+    mode: str = "linear",
+    overlay_edges: bool = False,
+    rgb_guidance: np.ndarray | None = None,
+    near_is_warm: bool = True,
 ) -> np.ndarray:
-    """Convert a 2D depth or error array into an RGB uint8 visualization."""
-    if vmin is None:
-        valid = depth[depth > 1e-3]
-        vmin = float(np.percentile(valid, 2)) if valid.size > 0 else 0.5
-    if vmax is None:
-        valid = depth[depth > 1e-3]
-        vmax = float(np.percentile(valid, 98)) if valid.size > 0 else 6.0
-    norm = np.clip((depth - vmin) / max(vmax - vmin, 1e-6), 0.0, 1.0)
+    """
+    Convert a 2D depth or error array into an RGB uint8 visualization.
+    When `near_is_warm=True` (default for depth maps), closer objects (smaller metric depth)
+    are rendered in Warm/Orange/Red tones and farther objects in Cool/Blue tones.
+    """
+    if mode == "disparity":
+        d_safe = np.maximum(depth, 0.05)
+        disp = 1.0 / d_safe
+        if invalid_mask is not None:
+            disp_valid = disp[~invalid_mask & (depth > 0.05) & np.isfinite(depth)]
+        else:
+            disp_valid = disp[(depth > 0.05) & np.isfinite(depth)]
+        disp_min = float(np.percentile(disp_valid, 2)) if disp_valid.size > 0 else float(disp.min())
+        disp_max = float(np.percentile(disp_valid, 98)) if disp_valid.size > 0 else float(disp.max())
+        norm = np.clip((disp - disp_min) / max(disp_max - disp_min, 1e-6), 0.0, 1.0)
+        if not near_is_warm:
+            norm = 1.0 - norm
+    elif mode == "log":
+        d_safe = np.maximum(depth, 0.05)
+        log_d = np.log(d_safe)
+        if invalid_mask is not None:
+            l_valid = log_d[~invalid_mask & (depth > 0.05)]
+        else:
+            l_valid = log_d[depth > 0.05]
+        l_min = float(np.percentile(l_valid, 2)) if l_valid.size > 0 else float(log_d.min())
+        l_max = float(np.percentile(l_valid, 98)) if l_valid.size > 0 else float(log_d.max())
+        norm = np.clip((log_d - l_min) / max(l_max - l_min, 1e-6), 0.0, 1.0)
+        if near_is_warm:
+            norm = 1.0 - norm
+    else:  # Linear metric depth
+        if vmin is None or vmax is None:
+            valid = depth[(depth > 0.05) & np.isfinite(depth)]
+            if invalid_mask is not None:
+                valid = valid[~invalid_mask[(depth > 0.05) & np.isfinite(depth)]]
+            v_min = float(np.percentile(valid, 2)) if (valid.size > 0 and vmin is None) else (vmin if vmin is not None else 0.5)
+            v_max = float(np.percentile(valid, 98)) if (valid.size > 0 and vmax is None) else (vmax if vmax is not None else 5.0)
+        else:
+            v_min, v_max = vmin, vmax
+        norm = np.clip((depth - v_min) / max(v_max - v_min, 1e-6), 0.0, 1.0)
+        if near_is_warm:
+            norm = 1.0 - norm
+
     try:
         cmap = mpl.colormaps[cmap_name]
     except Exception:
         cmap = cm.get_cmap(cmap_name)
+
     rgb = (cmap(norm)[..., :3] * 255.0).astype(np.uint8)
+
+    if overlay_edges and rgb_guidance is not None:
+        try:
+            gray_u8 = (np.clip(rgb_guidance, 0.0, 1.0) * 255.0).astype(np.uint8)
+            if gray_u8.ndim == 3:
+                gray_u8 = cv2.cvtColor(gray_u8, cv2.COLOR_RGB2GRAY)
+            edges = cv2.Canny(gray_u8, 60, 160) > 0
+            rgb[edges] = np.array([0, 240, 255], dtype=np.uint8)  # Cyan 1-pixel boundary
+        except Exception:
+            pass
+
     if invalid_mask is not None:
         rgb[invalid_mask] = np.array([25, 25, 30], dtype=np.uint8)
+
     return rgb
 
 
@@ -70,50 +121,137 @@ def build_3d_point_cloud_figure(
     depth: np.ndarray,
     rgb: np.ndarray,
     title: str,
-    stride: int = 3,
+    valid_mask: np.ndarray | None = None,
+    edge_gate: np.ndarray | None = None,
+    stride: int = 2,
+    point_size: float = 2.8,
+    dataset_name: str = "nyuv2",
+    color_mode: str = "rgb",
+    depth_clip_max: float | None = None,
+    height: int = 500,
+    disconnect_flying_pixels: bool = False,
 ) -> go.Figure:
-    """Create an interactive 3D RGB-colored point cloud in Plotly."""
+    """Create an interactive 3D RGB-colored point cloud in Plotly with metric pinhole camera geometry."""
     H, W = depth.shape
     yy, xx = np.meshgrid(np.arange(0, H, stride), np.arange(0, W, stride), indexing="ij")
     z = depth[::stride, ::stride]
     c = rgb[::stride, ::stride]
 
-    valid = (z > 0.1) & (z < 10.0) & np.isfinite(z)
+    # Sensor validity & physical scene bounds
+    ds_lower = dataset_name.lower()
+    max_metric_depth = 80.0 if "kitti" in ds_lower else 8.0
+    valid = (z > 0.05) & (z <= max_metric_depth) & np.isfinite(z)
+    if valid_mask is not None:
+        v_sub = valid_mask[::stride, ::stride]
+        valid = valid & v_sub
+
+    if depth_clip_max is not None and depth_clip_max > 0.1:
+        valid = valid & (z <= depth_clip_max)
+
     u = xx[valid]
-    v = yy[valid]
+    v_coord = yy[valid]
     z_val = z[valid]
-    c_val = (np.clip(c[valid], 0.0, 1.0) * 255).astype(int)
+    c_sub = c[valid]
 
-    # Back-project (u, v, z) using pinhole camera model
-    fx = fy = max(H, W) * 0.9
-    cx, cy = W / 2.0, H / 2.0
+    # Metric Camera Pinhole Focal Lengths adapted to sensor
+    if "kitti" in ds_lower:
+        focal_scale = 1.85
+        asp_ratio = dict(x=1.0, y=1.35, z=0.55)
+    elif "middlebury" in ds_lower or "artroom" in ds_lower or "chess" in ds_lower:
+        focal_scale = 1.35
+        asp_ratio = dict(x=1.0, y=1.1, z=0.85)
+    else:  # NYUv2 / In-the-wild camera
+        focal_scale = 1.15
+        asp_ratio = dict(x=1.0, y=1.15, z=0.8)
+
+    fx = fy = float(W) * focal_scale
+    cx, cy = float(W) / 2.0, float(H) / 2.0
+
+    # Back-projection to metric camera coordinate frame:
+    # X: horizontal width (m)
+    # Y: depth into scene (m, positive forward)
+    # Z: vertical height (m, upright positive)
     X = (u - cx) * z_val / fx
-    Y = -(v - cy) * z_val / fy
-    Z = -z_val
+    Y = z_val
+    Z = -(v_coord - cy) * z_val / fy
 
-    colors_str = [f"rgb({r},{g},{b})" for r, g, b in c_val]
+    if disconnect_flying_pixels and len(z_val) > 0:
+        gx = np.abs(np.gradient(depth, axis=1))[::stride, ::stride][valid]
+        gy = np.abs(np.gradient(depth, axis=0))[::stride, ::stride][valid]
+        grad_mag = np.sqrt(gx**2 + gy**2)
+        # Prune true mid-air flying pixel bridge slopes across depth discontinuities
+        rel_grad = grad_mag / np.maximum(z_val, 0.1)
+        is_flying_bridge = (rel_grad > 0.14) & (grad_mag > 0.22)
+        keep = ~is_flying_bridge
+        X, Y, Z = X[keep], Y[keep], Z[keep]
+        c_sub = c_sub[keep]
+        z_val = z_val[keep]
+        valid_subset = keep
+    else:
+        valid_subset = np.ones(len(z_val), dtype=bool)
+
+    # Color mapping (Warm/Orange = Closer, Cool/Blue = Farther)
+    if color_mode == "depth":
+        vmin = float(z_val.min()) if z_val.size > 0 else 0.5
+        vmax = float(z_val.max()) if z_val.size > 0 else 5.0
+        norm_z = 1.0 - np.clip((z_val - vmin) / max(vmax - vmin, 1e-6), 0.0, 1.0)
+        cmap = mpl.colormaps["turbo"]
+        mapped_rgba = (cmap(norm_z)[:, :3] * 255).astype(int)
+        colors_str = [f"rgb({r},{g},{b})" for r, g, b in mapped_rgba]
+    elif color_mode == "discontinuity":
+        if edge_gate is not None:
+            eg_sub = edge_gate[::stride, ::stride][valid]
+            if len(eg_sub) > len(z_val):
+                eg_sub = eg_sub[valid_subset]
+            is_flying = eg_sub > 0.45
+        else:
+            gx = np.abs(np.gradient(depth, axis=1))[::stride, ::stride][valid]
+            gy = np.abs(np.gradient(depth, axis=0))[::stride, ::stride][valid]
+            grad_mag = np.sqrt(gx**2 + gy**2)
+            thresh = float(np.percentile(grad_mag, 85)) if grad_mag.size > 0 else 0.2
+            is_flying = grad_mag > thresh
+        colors_str = []
+        c_base = (np.clip(c_sub, 0.0, 1.0) * 255).astype(int)
+        for i, (r, g, b) in enumerate(c_base):
+            if is_flying[i]:
+                colors_str.append("rgb(255, 55, 55)")  # Flying pixel / edge boundary in scarlet red
+            else:
+                colors_str.append(f"rgb({r},{g},{b})")
+    else:
+        c_val = (np.clip(c_sub, 0.0, 1.0) * 255).astype(int)
+        # Elevate minimum brightness slightly so dark wood floors/chair legs don't vanish into the black 3D canvas
+        c_val = np.maximum(c_val, 28)
+        colors_str = [f"rgb({r},{g},{b})" for r, g, b in c_val]
 
     fig = go.Figure(
         data=[
             go.Scatter3d(
                 x=X,
-                y=Z,
-                z=Y,
+                y=Y,
+                z=Z,
                 mode="markers",
-                marker=dict(size=2.4, color=colors_str, opacity=0.92),
+                marker=dict(size=point_size, color=colors_str, opacity=0.96),
             )
         ]
     )
     fig.update_layout(
         title=title,
         margin=dict(l=0, r=0, b=0, t=35),
-        height=460,
+        height=height,
         scene=dict(
-            xaxis_title="X (m)",
-            yaxis_title="Depth Z (m)",
-            zaxis_title="Y (m)",
-            aspectmode="data",
-            camera=dict(eye=dict(x=1.25, y=1.35, z=0.65)),
+            xaxis_title="Width X (m)",
+            yaxis_title="Depth into Scene (m)",
+            zaxis_title="Height Up (m)",
+            bgcolor="#13151b",
+            xaxis=dict(backgroundcolor="#181a22", gridcolor="#2c2f3d", showbackground=True),
+            yaxis=dict(backgroundcolor="#181a22", gridcolor="#2c2f3d", showbackground=True),
+            zaxis=dict(backgroundcolor="#181a22", gridcolor="#2c2f3d", showbackground=True),
+            aspectmode="manual",
+            aspectratio=asp_ratio,
+            camera=dict(
+                eye=dict(x=0.55, y=-1.45, z=0.55),
+                up=dict(x=0, y=0, z=1),
+            ),
         ),
     )
     return fig
@@ -121,17 +259,67 @@ def build_3d_point_cloud_figure(
 
 def generate_camera_depth_prior(rgb_np: np.ndarray) -> np.ndarray:
     """
-    Generate a realistic geometric depth prior for a standalone RGB camera photo.
-    Combines vertical perspective ground slope with luminance & edge cues.
-    Range: [0.6m, 5.0m] (standard indoor/room scale).
+    Generate an intelligent, continuous, edge-preserving geometric depth prior for any camera photo.
+    Supports arbitrary perspective angles (side angle, tabletop, eye-level, indoor/outdoor).
+
+    Principles:
+    1. Continuous Perspective Ground/Support Plane:
+       Standard optical perspective creates a continuous depth gradient from the bottom of the frame
+       (closest to camera, ~0.85m) to the top (deep into the background, ~3.5m).
+    2. Continuous 3D Object Surface Relief:
+       Physical objects resting on the table/floor protrude upward toward the camera.
+       Protrusion (relief) is continuously estimated from multi-scale focus, color saliency,
+       and illumination contrast (dz ~ 0.1m - 0.35m), preserving the natural slant of the object
+       from front to back rather than flattening it into an artificial cutout.
+    3. Edge-Preserving Bilateral Guidance:
+       Refines the continuous depth field using RGB image contours so boundaries align sharply
+       with physical object edges while interior surfaces remain smooth and continuously curved.
     """
     H, W = rgb_np.shape[:2]
-    y_coords, _ = np.mgrid[0:H, 0:W]
-    y_norm = y_coords / float(max(H, 1))
-    depth_base = 3.8 - 2.4 * y_norm
-    gray = cv2.cvtColor((rgb_np * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
-    depth_prior = depth_base + 0.4 * (1.0 - gray)
-    return np.clip(depth_prior, 0.6, 6.0).astype(np.float32)
+    img_u8 = (np.clip(rgb_np, 0.0, 1.0) * 255.0).astype(np.uint8)
+    gray_u8 = cv2.cvtColor(img_u8, cv2.COLOR_RGB2GRAY)
+    gray_f = gray_u8.astype(np.float32) / 255.0
+
+    yy, xx = np.mgrid[0:H, 0:W]
+    y_norm = yy.astype(np.float32) / max(H, 1)
+
+    # 1. Perspective Support Plane (continuous monotonic slant)
+    # Bottom of image is closest (~0.85m), top of image is farthest (~3.5m)
+    z_support = 3.5 - 2.65 * (y_norm ** 0.85)
+
+    # 2. Multi-Cue Continuous Surface Relief
+    # Focus / High-frequency sharpness (focused objects are in focal zone)
+    lap = np.abs(cv2.Laplacian(gray_u8, cv2.CV_32F))
+    focus = cv2.GaussianBlur(lap, (15, 15), 0)
+    f_norm = (focus - focus.min()) / max(float(focus.max() - focus.min()), 1e-4)
+
+    # Color Saliency in LAB space (foreground subject color contrast)
+    lab = cv2.cvtColor(img_u8, cv2.COLOR_RGB2LAB).astype(np.float32)
+    color_diff = np.linalg.norm(lab - lab.mean(axis=(0, 1), keepdims=True), axis=-1)
+    saliency = cv2.GaussianBlur(color_diff, (19, 19), 0)
+    s_norm = (saliency - saliency.min()) / max(float(saliency.max() - saliency.min()), 1e-4)
+
+    # Shading / Luminance curvature
+    shading = cv2.GaussianBlur(1.0 - gray_f, (9, 9), 0)
+
+    # Continuous relief: foreground objects stand up to 0.35m closer to the camera
+    relief = 0.45 * f_norm + 0.35 * s_norm + 0.20 * shading
+    relief = cv2.GaussianBlur(relief, (11, 11), 0)
+    z_raw = z_support - 0.35 * relief
+
+    # 3. Bilateral Edge Alignment with RGB Guidance
+    # Preserves smooth internal slopes across surfaces while snapping silhouettes to RGB contours
+    depth_smooth = cv2.bilateralFilter(z_raw.astype(np.float32), d=9, sigmaColor=0.15, sigmaSpace=9.0)
+
+    # Subtle 1-pixel shock filter along strong Canny contours to prevent boundary bleeding
+    edges = cv2.Canny(gray_u8, 40, 120) > 0
+    d_erode = cv2.erode(depth_smooth, np.ones((3, 3), np.uint8))
+    d_dilate = cv2.dilate(depth_smooth, np.ones((3, 3), np.uint8))
+    mid = 0.5 * (d_erode + d_dilate)
+    target = np.where(depth_smooth <= mid, d_erode, d_dilate)
+    depth_final = np.where(edges, 0.65 * target + 0.35 * depth_smooth, depth_smooth)
+
+    return np.clip(depth_final, 0.6, 5.0).astype(np.float32)
 
 
 def main() -> None:
@@ -142,20 +330,22 @@ def main() -> None:
         "*Benchmarked on NYU Depth V2, Middlebury Stereo (2001–2021), and KITTI Vision Suite.*"
     )
 
-    engine = get_hybrid_engine()
+    ckpt_path = Path("checkpoints/eg_depthnet_best.pt")
+    ckpt_mtime = ckpt_path.stat().st_mtime if ckpt_path.exists() else 0.0
+    engine = get_hybrid_engine(ckpt_mtime=ckpt_mtime)
     device = engine.device
 
     # --- Sidebar Controls ---
     st.sidebar.header("⚙️ Sensor & Reconstruction Controls")
     dataset_choice = st.sidebar.selectbox(
         "Dataset / Source",
-        options=["middlebury", "nyuv2", "kitti", "synthetic", "custom_upload"],
+        options=["nyuv2", "middlebury", "kitti", "synthetic", "custom_upload"],
         format_func=lambda x: {
-            "middlebury": "Middlebury Stereo (2001–2021)",
             "nyuv2": "NYU Depth V2 (Indoor RGB-D)",
+            "middlebury": "Middlebury Stereo (2001–2021)",
             "kitti": "KITTI Vision Suite (Outdoor LiDAR)",
             "synthetic": "3D Texture-Copy Stress Scene",
-            "custom_upload": "Upload Custom RGB + Depth",
+            "custom_upload": "🛰️ Upload Sensor RGB-D Capture (LiDAR / RealSense)",
         }[x],
     )
 
@@ -171,6 +361,39 @@ def main() -> None:
             value=False,
             help="When checked, includes raw 2011 Kinect v1 hardware absorption blackouts in addition to multi-scale decimation.",
         )
+
+    cmap_choice = st.sidebar.selectbox(
+        "Depth Colormap / Palette",
+        options=["turbo", "plasma", "Spectral_r", "viridis", "inferno", "magma"],
+        index=0,
+        help="Choose visualization colormap. 'turbo' is default scientific; 'plasma' and 'Spectral_r' highlight boundaries like reference papers.",
+    )
+
+    viz_mode = st.sidebar.selectbox(
+        "2D Depth Contrast Mode",
+        options=["linear", "disparity", "log"],
+        index=0,
+        format_func=lambda x: {
+            "linear": "📏 Metric Depth (Continuous Physical Distance)",
+            "disparity": "✨ Perceptual Disparity (Inverse Depth 1/d)",
+            "log": "📐 Logarithmic Depth",
+        }[x],
+        help="Metric Depth colorizes physical distance in meters (blue=near, yellow/red=far). Perceptual Disparity inverts depth.",
+    )
+
+    overlay_edges = st.sidebar.checkbox(
+        "Highlight 1-Pixel Object Silhouettes (Edge Overlay)",
+        value=False,
+        help="Overlays a subtle 1-pixel cyan outline on detected RGB object edges to visually confirm sub-pixel boundary alignment.",
+    )
+
+    res_choice = st.sidebar.selectbox(
+        "Processing Canvas Resolution",
+        options=[256, 512],
+        index=0,
+        format_func=lambda x: f"{x} × {x} ({'Standard Fast ~50ms' if x == 256 else 'High-Definition Studio ~110ms'})",
+        help="Choose processing canvas resolution. 512×512 provides 4× higher pixel density for ultra-sharp boundary inspection.",
+    )
 
     st.sidebar.markdown("---")
     st.sidebar.subheader("⚡ Quantization & Acceleration")
@@ -192,6 +415,10 @@ def main() -> None:
         f"**INT8 Quantized**: `{q_stats.compressed_size_mb:.2f} MB` (**{q_stats.compression_ratio:.2f}× smaller**)"
     )
 
+    if st.sidebar.button("🔄 Reload Latest Weights Cache"):
+        st.cache_resource.clear()
+        st.rerun()
+
     deg_cfg = DegradationConfig(
         scale=scale,
         hole_ratio=hole_ratio,
@@ -202,18 +429,32 @@ def main() -> None:
     )
 
     if dataset_choice == "custom_upload":
-        st.markdown("### 📸 Custom Camera & RGB-D Testing Studio")
+        st.markdown("### 🛰️ Hardware Sensor RGB-D Testing Studio")
         st.markdown(
-            "Test the trained **EG-DepthNet + Hybrid Reconstructor** on your own camera photos, phone captures, or custom RGB-D datasets."
+            "Evaluate **EG-DepthNet + Hybrid Reconstructor** on genuine captures from physical depth-sensing hardware "
+            "(LiDAR scanners, Time-of-Flight sensors, stereo depth cameras, or synthetic simulators)."
         )
 
+        with st.expander("ℹ️ How to obtain genuine RGB-D captures for this model", expanded=False):
+            st.markdown(
+                """
+                - **iPhone Pro / iPad Pro with LiDAR**: Use free iOS apps like **3D Scanner App**, **Record3D**, or **Polycam**. Export both the **Color Photo** (`.png`/`.jpg`) and the **16-bit Millimeter Depth Map** (`.png`).
+                - **Dedicated Depth Cameras**: Intel RealSense (D435/D455), Microsoft Azure Kinect, Orbbec Astra, ZED Stereo.
+                - **Robotics & Simulation Suites**: CARLA, AirSim, Isaac Sim, or Blender depth passes.
+                - **Academic RGB-D Datasets**: NYUv2, Middlebury Stereo, ScanNet, KITTI LiDAR.
+                - **Supported File Formats**:
+                  - *RGB Guidance Image*: `.png`, `.jpg`, `.jpeg`, `.webp`
+                  - *Depth Map*: 16-bit millimeter PNG (values $>20$ divided by $1000$ to meters), 32-bit floating point `.npy` (meters), or 8-bit normalized grayscale PNG.
+                """
+            )
+
         upload_mode = st.radio(
-            "Select Input Source Mode",
+            "Select Sensor / Image Input Mode",
             options=["photo_only", "paired_rgbd", "preset_samples"],
             format_func=lambda x: {
-                "photo_only": "📷 Phone / Camera Photo (RGB Only — Instant Depth Prior & Upsampling)",
-                "paired_rgbd": "🛰️ Paired RGB + Depth Map (.png, .npy, 16-bit millimeter depth)",
-                "preset_samples": "🖼️ Try Built-in Real-World Camera Presets",
+                "photo_only": "📷 Upload Any Phone / Camera Photo (Automatic 3D Depth + Edge Refinement)",
+                "paired_rgbd": "🛰️ Upload Paired Sensor Capture (Color Image + Real Depth Map)",
+                "preset_samples": "🎯 1-Click Calibrated Hardware Demos (Middlebury Structured Light & Stereo)",
             }[x],
             horizontal=True,
         )
@@ -221,7 +462,7 @@ def main() -> None:
         target_res = st.selectbox(
             "Target Processing Resolution",
             options=[256, 384, 512],
-            index=0,
+            index=0 if res_choice == 256 else 2,
             format_func=lambda x: f"{x} × {x} pixels ({'Fast' if x==256 else 'Balanced' if x==384 else 'High-Definition'})",
         )
 
@@ -230,77 +471,66 @@ def main() -> None:
         sample_name = "custom_camera"
 
         PRESET_MAP = {
-            "Art Studio (Sculpture & Easel)": Path("data/middlebury/2005_Art"),
-            "Office Desk (Books & Complex Shapes)": Path("data/middlebury/2005_Books"),
-            "Living Room Dolls (Fine Foreground Details)": Path("data/middlebury/2005_Dolls"),
-            "Indoor Laundry (Cloth Folds & Occlusions)": Path("data/middlebury/2005_Laundry"),
-            "Botanical Aloe (Thin Object Edges)": Path("data/middlebury/2006_Aloe"),
+            "Art Studio & Easel (artroom1)": Path("data/middleburry/data/artroom1"),
+            "Bandsaw Industrial Workshop (bandsaw1)": Path("data/middleburry/data/bandsaw1"),
+            "Chessboard & Pieces (chess1)": Path("data/middleburry/data/chess1"),
+            "Ladder & Scaffolding (ladder1)": Path("data/middleburry/data/ladder1"),
+            "Roller Skates (skates1)": Path("data/middleburry/data/skates1"),
         }
 
-        if upload_mode == "preset_samples":
-            preset_choice = st.selectbox("Choose a Built-in Real Camera Scene", options=list(PRESET_MAP.keys()))
-            p_dir = PRESET_MAP[preset_choice]
-            rgb_path = next(p_dir.glob("view*.png"), None) or next(p_dir.glob("im*.png"), None)
-            disp_path = next(p_dir.glob("disp*.png"), None) or next(p_dir.glob("disp*.pfm"), None)
-            if rgb_path and rgb_path.exists():
-                bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
-                rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-            if disp_path and disp_path.exists():
-                gray = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
-                if gray is not None:
-                    if gray.ndim == 3:
-                        gray = gray[:, :, 0]
-                    disp_valid = np.nan_to_num(gray.astype(np.float32), nan=0.0)
-                    depth_np = 100.0 / np.maximum(disp_valid, 5.0)
-                    depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
-            sample_name = p_dir.name
-
-        elif upload_mode == "photo_only":
-            st.info("💡 **Camera Photo Testing**: Upload any photo from your phone or camera. A geometric depth prior will be synthesized and degraded at your selected factor (2×, 4×, 8×) to demonstrate how EG-DepthNet sharpens boundaries!")
-            up_col1, up_col2 = st.columns([2, 1])
-            with up_col1:
-                rgb_file = st.file_uploader(
-                    "Upload Camera Photo (.jpg, .png, .jpeg, .webp)",
-                    type=["png", "jpg", "jpeg", "webp"],
-                    key="camera_photo_uploader",
-                )
-            with up_col2:
-                st.markdown("**Or Test with Sample Photos:**")
-                if st.button("🛋️ Living Room Statue"):
-                    st.session_state["camera_preset"] = "Art Studio (Sculpture & Easel)"
-                if st.button("📚 Office Desk"):
-                    st.session_state["camera_preset"] = "Office Desk (Books & Complex Shapes)"
-                if st.button("🌿 Botanical Plant"):
-                    st.session_state["camera_preset"] = "Botanical Aloe (Thin Object Edges)"
-
+        if upload_mode == "photo_only":
+            st.info("💡 **Single Photo Mode**: Upload any photo from your phone or camera. The application automatically generates an edge-preserving geometric depth map, simulates sensor decimation & holes, and uses **EG-DepthNet** to reconstruct razor-sharp 3D boundaries!")
+            rgb_file = st.file_uploader(
+                "Upload Camera Photo (.jpg, .png, .jpeg, .webp)",
+                type=["png", "jpg", "jpeg", "webp"],
+                key="single_camera_photo_uploader",
+            )
             if rgb_file is not None:
                 file_bytes = np.asarray(bytearray(rgb_file.read()), dtype=np.uint8)
                 bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
                 if bgr is not None:
                     rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
                     sample_name = Path(rgb_file.name).stem
-            elif "camera_preset" in st.session_state:
-                p_dir = PRESET_MAP[st.session_state["camera_preset"]]
-                rgb_path = next(p_dir.glob("view*.png"), None)
-                if rgb_path and rgb_path.exists():
-                    bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
-                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                    sample_name = p_dir.name
             else:
-                p_dir = PRESET_MAP["Art Studio (Sculpture & Easel)"]
-                rgb_path = next(p_dir.glob("view*.png"), None)
+                st.caption("ℹ️ *Awaiting your photo upload. Displaying sample 'Art Studio' scene below:*")
+                p_dir = PRESET_MAP["Art Studio & Easel (artroom1)"]
+                rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
                 if rgb_path and rgb_path.exists():
                     bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
                     rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                    sample_name = "camera_demo_art"
+                sample_name = "demo_art_studio"
+
+        elif upload_mode == "preset_samples":
+            preset_choice = st.selectbox("Choose a Calibrated Hardware Sensor Scene", options=list(PRESET_MAP.keys()))
+            p_dir = PRESET_MAP[preset_choice]
+            rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
+            disp_path = next(p_dir.glob("disp*.pfm"), None) or next(p_dir.glob("disp*.png"), None)
+            if rgb_path and rgb_path.exists():
+                bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
+                rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            if disp_path and disp_path.exists():
+                if disp_path.suffix == ".pfm":
+                    disp_np = MiddleburyDataset(scene_dirs=[])._read_disp(disp_path)
+                    disp_valid = np.nan_to_num(disp_np, nan=0.0, posinf=0.0, neginf=0.0)
+                    depth_np = 100.0 / np.maximum(disp_valid, 5.0)
+                    depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
+                else:
+                    gray = cv2.imread(str(disp_path), cv2.IMREAD_UNCHANGED)
+                    if gray is not None:
+                        if gray.ndim == 3:
+                            gray = gray[:, :, 0]
+                        disp_valid = np.nan_to_num(gray.astype(np.float32), nan=0.0)
+                        depth_np = 100.0 / np.maximum(disp_valid, 5.0)
+                        depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
+            sample_name = p_dir.name
 
         elif upload_mode == "paired_rgbd":
-            st.info("💡 **Paired RGB-D Testing**: Upload both an RGB guidance image and its corresponding depth map (supports 8-bit, 16-bit millimeter PNG, or .npy).")
+            st.info("💡 **Paired RGB-D Input**: Upload both the RGB guidance image and its aligned depth map from any depth-recording device or simulator.")
             p_col1, p_col2 = st.columns(2)
             with p_col1:
-                rgb_file = st.file_uploader("Upload High-Res RGB Image (.png, .jpg)", type=["png", "jpg", "jpeg", "webp"], key="paired_rgb")
+                rgb_file = st.file_uploader("Upload High-Res Color Image (.png, .jpg, .jpeg, .webp)", type=["png", "jpg", "jpeg", "webp"], key="paired_rgb")
             with p_col2:
-                depth_file = st.file_uploader("Upload Aligned Depth Map (.png, .npy)", type=["png", "npy"], key="paired_depth")
+                depth_file = st.file_uploader("Upload Aligned Depth Map (.png, .npy, .npz)", type=["png", "npy", "npz"], key="paired_depth")
 
             if rgb_file is not None:
                 file_bytes = np.asarray(bytearray(rgb_file.read()), dtype=np.uint8)
@@ -312,6 +542,16 @@ def main() -> None:
             if depth_file is not None:
                 if depth_file.name.endswith(".npy"):
                     depth_np = np.load(depth_file).astype(np.float32)
+                elif depth_file.name.endswith(".npz"):
+                    npz_data = np.load(depth_file)
+                    if "depth" in npz_data:
+                        depth_np = npz_data["depth"].astype(np.float32)
+                    elif "disp" in npz_data:
+                        depth_np = 100.0 / np.maximum(npz_data["disp"].astype(np.float32), 5.0)
+                    if rgb_np is None and "rgb" in npz_data:
+                        rgb_np = npz_data["rgb"].astype(np.float32)
+                        if rgb_np.max() > 1.5:
+                            rgb_np /= 255.0
                 else:
                     d_bytes = np.asarray(bytearray(depth_file.read()), dtype=np.uint8)
                     d_raw = cv2.imdecode(d_bytes, cv2.IMREAD_UNCHANGED)
@@ -319,24 +559,26 @@ def main() -> None:
                         if d_raw.ndim == 3:
                             d_raw = d_raw[:, :, 0]
                         d_raw_f = d_raw.astype(np.float32)
-                        if d_raw_f.max() > 20.0:  # 16-bit millimeter depth
+                        if d_raw_f.max() > 20.0:  # 16-bit millimeter depth (e.g. RealSense / iPhone LiDAR)
                             depth_np = np.clip(d_raw_f / 1000.0, 0.2, 10.0)
-                        else:  # 8-bit grayscale normalized
+                        else:  # 8-bit grayscale normalized depth
                             depth_np = 0.8 + 4.2 * (d_raw_f - d_raw_f.min()) / max(float(d_raw_f.max() - d_raw_f.min()), 1e-5)
 
+            # Fallback to Demo Scene if files haven't been uploaded yet so the page never errors
             if rgb_np is None or depth_np is None:
-                st.warning("Please upload both an RGB image and a Depth map to run paired evaluation. Or click below to load a sample:")
-                if st.button("🖼️ Load Demo Paired Scene (Office Desk)"):
-                    p_dir = PRESET_MAP["Office Desk (Books & Complex Shapes)"]
-                    bgr = cv2.imread(str(next(p_dir.glob("view*.png"))), cv2.IMREAD_COLOR)
+                st.caption("ℹ️ *Awaiting custom sensor files. Displaying real-world structured-light benchmark pair below:*")
+                p_dir = PRESET_MAP["Art Studio & Easel (artroom1)"]
+                rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
+                disp_path = next(p_dir.glob("disp*.pfm"), None) or next(p_dir.glob("disp*.png"), None)
+                if rgb_path and rgb_path.exists():
+                    bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
                     rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                    gray = cv2.imread(str(next(p_dir.glob("disp*.png"))), cv2.IMREAD_GRAYSCALE).astype(np.float32)
-                    depth_np = np.clip(100.0 / np.maximum(gray, 5.0), 0.5, 6.0)
-                    sample_name = "demo_office_desk"
-
-        if rgb_np is None:
-            st.error("No image available. Please upload an RGB photo.")
-            return
+                if disp_path and disp_path.exists():
+                    disp_np = MiddleburyDataset(scene_dirs=[])._read_disp(disp_path)
+                    disp_valid = np.nan_to_num(disp_np, nan=0.0, posinf=0.0, neginf=0.0)
+                    depth_np = 100.0 / np.maximum(disp_valid, 5.0)
+                    depth_np = np.clip(depth_np, 0.5, 6.0).astype(np.float32)
+                sample_name = "demo_art_studio"
 
         # Resize / Center-crop cleanly to (target_res, target_res)
         h_orig, w_orig = rgb_np.shape[:2]
@@ -373,7 +615,7 @@ def main() -> None:
             name=dataset_choice,  # type: ignore[arg-type]
             split="test",
             degradation=deg_cfg,
-            crop_size=256,
+            crop_size=res_choice,
             max_samples=16,
             fallback_to_synthetic=True,
             use_raw_sensor_holes=kinect_hardware_holes,
@@ -393,7 +635,7 @@ def main() -> None:
     metrics_rows = []
 
     for m in ALL_METHODS:
-        if m in ("nearest", "bilinear", "bicubic", "guided", "jbf"):
+        if m in ("nearest", "bilinear", "bicubic", "mask_bicubic", "guided", "jbf"):
             out_t, lat_ms, mem_mb = measure_runtime_and_memory(
                 lambda m_name=m: reconstruct_classical(
                     depth_lr, rgb_hr, scale=scale, method=m_name, valid_mask_lr=valid_lr  # type: ignore[arg-type]
@@ -434,6 +676,16 @@ def main() -> None:
             out_t = res_obj.depth_hybrid
             edge_gate_np = res_obj.edge_gate[0].detach().cpu().numpy()
             uncertainty_np = res_obj.uncertainty[0].detach().cpu().numpy()
+            depth_prior_np = (
+                res_obj.depth_prior[0].detach().cpu().numpy()
+                if res_obj.depth_prior is not None
+                else out_t[0].detach().cpu().numpy()
+            )
+            feature_vis_np = (
+                res_obj.feature_vis[0].detach().cpu().numpy()
+                if res_obj.feature_vis is not None
+                else edge_gate_np
+            )
 
         preds[m] = out_t[0].detach().cpu().numpy()
         m_dict = compute_depth_metrics(out_t, depth_gt, valid_gt, boundary_gt, rgb_hr)
@@ -445,11 +697,16 @@ def main() -> None:
 
     rgb_np = rgb_hr.detach().cpu().numpy().transpose(1, 2, 0)
     gt_np = depth_gt[0].detach().cpu().numpy()
+    valid_gt_np = valid_gt[0].detach().cpu().numpy() > 0.5
     lr_np = depth_lr[0].detach().cpu().numpy()
     lr_valid_np = valid_lr[0].detach().cpu().numpy() > 0.5
     boundary_np = boundary_gt[0].detach().cpu().numpy()
 
-    vmin, vmax = float(np.percentile(gt_np, 2)), float(np.percentile(gt_np, 98))
+    valid_gt_vals = gt_np[valid_gt_np]
+    if valid_gt_vals.size > 0:
+        vmin, vmax = float(np.percentile(valid_gt_vals, 2)), float(np.percentile(valid_gt_vals, 98))
+    else:
+        vmin, vmax = float(np.percentile(gt_np, 2)), float(np.percentile(gt_np, 98))
 
     # Top KPI Banner
     best_row = next(r for r in metrics_rows if r["Key"] == "hybrid")
@@ -475,54 +732,94 @@ def main() -> None:
 
     with tab1:
         st.subheader(f"Scene `{sample['name']}` — {scale}× Depth Upsampling & Refinement")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.image((rgb_np * 255).astype(np.uint8), caption="High-Res RGB Guidance", use_container_width=True)
+        st.markdown("#### Panel 1 — The 'PatchRefiner / ProbID-P4' 5-View Reference Showcase")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.image((rgb_np * 255).astype(np.uint8), caption="Input RGB Image", use_container_width=True)
+        c2.image(
+            colorize_depth(depth_prior_np, vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption="Depth Anything / Structural Prior (LWLS Aligned)",
+            use_container_width=True,
+        )
         lr_up_vis = cv2.resize(
-            colorize_depth(lr_np, vmin, vmax, invalid_mask=~lr_valid_np),
+            colorize_depth(lr_np, vmin, vmax, cmap_name=cmap_choice, invalid_mask=~lr_valid_np, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
             (gt_np.shape[1], gt_np.shape[0]),
             interpolation=cv2.INTER_NEAREST,
         )
-        c2.image(
-            lr_up_vis,
-            caption=f"Degraded LR Input ({lr_np.shape[1]}×{lr_np.shape[0]}, Holes & Noise)",
-            use_container_width=True,
-        )
         c3.image(
-            colorize_depth(preds["bicubic"], vmin, vmax),
-            caption=f"Bicubic Baseline (RMSE: {bic_row['RMSE']:.4f}m)",
+            lr_up_vis,
+            caption=f"LR GT / Sensor Input ({lr_np.shape[1]}×{lr_np.shape[0]}, Holes & Noise)",
             use_container_width=True,
         )
         c4.image(
-            colorize_depth(preds["hybrid"], vmin, vmax),
-            caption=f"Hybrid EG-DepthNet (RMSE: {best_row['RMSE']:.4f}m)",
+            colorize_depth(gt_np, vmin, vmax, cmap_name=cmap_choice, invalid_mask=~valid_gt_np, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption="HR Ground Truth Target",
+            use_container_width=True,
+        )
+        c5.image(
+            colorize_depth(preds["hybrid"], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption=f"Ours (Self-Distilled Hybrid — RMSE: {best_row['RMSE']:.4f}m)",
             use_container_width=True,
         )
 
-        st.markdown("#### Full Method Comparison Matrix (Classical vs. Deep vs. Hybrid)")
-        m_cols = st.columns(5)
-        for idx, m_key in enumerate(["nearest", "guided", "jbf", "deep", "hybrid"]):
+        st.markdown("#### Panel 2 — The 'LoftUp' Two-Stage Upsampling Progression Strip")
+        mb_row = next(r for r in metrics_rows if r["Key"] == "mask_bicubic")
+        jbf_row = next(r for r in metrics_rows if r["Key"] == "jbf")
+        l1, l2, l3, l4, l5 = st.columns(5)
+        l1.image((rgb_np * 255).astype(np.uint8), caption="(a) Original Image", use_container_width=True)
+        l2.image(
+            colorize_depth(preds["jbf"], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption=f"(b) Classical JBF / Guided\n(RMSE: {jbf_row['RMSE']:.4f}m)",
+            use_container_width=True,
+        )
+        l3.image(
+            colorize_depth(feature_vis_np, None, None, cmap_name="viridis", near_is_warm=False),
+            caption=f"(c) {scale}× Coordinate Neural Features\n(Continuous Cross-Attention)",
+            use_container_width=True,
+        )
+        l4.image(
+            colorize_depth(preds["mask_bicubic"], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption=f"(d) Mask-Bicubic (Stage 1)\n(RMSE: {mb_row['RMSE']:.4f}m)",
+            use_container_width=True,
+        )
+        l5.image(
+            colorize_depth(preds["hybrid"], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption=f"(e) Self-Distilled Hybrid (Stage 2)\n(RMSE: {best_row['RMSE']:.4f}m | DBE: {best_row['DBE_acc']:.2f}px)",
+            use_container_width=True,
+        )
+
+        st.markdown("#### Full Method Comparison Matrix (Classical vs. Deep vs. Hybrid vs. Target)")
+        m_cols = st.columns(6)
+        for idx, m_key in enumerate(["nearest", "guided", "mask_bicubic", "deep", "hybrid"]):
             r_info = next(r for r in metrics_rows if r["Key"] == m_key)
             m_cols[idx].image(
-                colorize_depth(preds[m_key], vmin, vmax),
+                colorize_depth(preds[m_key], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
                 caption=f"{METHOD_LABELS[m_key]}\nRMSE: {r_info['RMSE']:.4f}m | Edge-F1: {r_info['Edge_F1']:.3f}",
                 use_container_width=True,
             )
+        m_cols[5].image(
+            colorize_depth(gt_np, vmin, vmax, cmap_name=cmap_choice, invalid_mask=~valid_gt_np, mode=viz_mode, overlay_edges=overlay_edges, rgb_guidance=rgb_np),
+            caption="Ground Truth HR\n(Ideal Reference)",
+            use_container_width=True,
+        )
 
-        st.markdown("#### Internal Explainability: Learned Edge-Coherence Gate ($G_{edge}$) & Uncertainty Map")
+        st.markdown("#### Internal Explainability: Learned Edge-Coherence Gate ($G_{edge}$), Uncertainty, & Improvement Heatmap")
         e1, e2, e3 = st.columns(3)
         e1.image(
-            colorize_depth(edge_gate_np, 0.0, 1.0, cmap_name="magma"),
-            caption="Learned Edge-Coherence Gate G_edge (Suppresses Texture-Copying on Flat Walls)",
+            colorize_depth(edge_gate_np, 0.0, 1.0, cmap_name="magma", near_is_warm=False),
+            caption="Learned Edge-Coherence Gate G_edge (Suppresses Texture-Copying)",
             use_container_width=True,
         )
         e2.image(
-            colorize_depth(uncertainty_np, None, None, cmap_name="inferno"),
+            colorize_depth(uncertainty_np, None, None, cmap_name="inferno", near_is_warm=False),
             caption="Predicted Aleatoric Uncertainty (Drives Stage-3 Bilateral Energy Fusion)",
             use_container_width=True,
         )
+        err_bic = np.abs(preds["bicubic"] - gt_np)
+        err_hyb = np.abs(preds["hybrid"] - gt_np)
+        gain_map = err_bic - err_hyb
         e3.image(
-            colorize_depth(gt_np, vmin, vmax),
-            caption="Ground Truth High-Resolution Depth",
+            colorize_depth(gain_map, -0.15, 0.40, cmap_name="coolwarm", near_is_warm=False),
+            caption="Error Gain Map (Warm regions show where Hybrid eliminated Bicubic blur)",
             use_container_width=True,
         )
 
@@ -544,27 +841,37 @@ def main() -> None:
         )
         zc2.image(
             cv2.resize(
-                colorize_depth(preds["nearest"][y0:y1, x0:x1], vmin, vmax), (220, 220), interpolation=cv2.INTER_NEAREST
+                colorize_depth(preds["nearest"][y0:y1, x0:x1], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode),
+                (220, 220),
+                interpolation=cv2.INTER_NEAREST,
             ),
             caption="Nearest (Blocky Artifacts)",
             use_container_width=True,
         )
         zc3.image(
             cv2.resize(
-                colorize_depth(preds["bicubic"][y0:y1, x0:x1], vmin, vmax), (220, 220), interpolation=cv2.INTER_NEAREST
+                colorize_depth(preds["bicubic"][y0:y1, x0:x1], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode),
+                (220, 220),
+                interpolation=cv2.INTER_NEAREST,
             ),
             caption="Bicubic (Blurred Boundary)",
             use_container_width=True,
         )
         zc4.image(
             cv2.resize(
-                colorize_depth(preds["hybrid"][y0:y1, x0:x1], vmin, vmax), (220, 220), interpolation=cv2.INTER_NEAREST
+                colorize_depth(preds["hybrid"][y0:y1, x0:x1], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode),
+                (220, 220),
+                interpolation=cv2.INTER_NEAREST,
             ),
             caption="Hybrid (Sharp Discontinuity)",
             use_container_width=True,
         )
         zc5.image(
-            cv2.resize(colorize_depth(gt_np[y0:y1, x0:x1], vmin, vmax), (220, 220), interpolation=cv2.INTER_NEAREST),
+            cv2.resize(
+                colorize_depth(gt_np[y0:y1, x0:x1], vmin, vmax, cmap_name=cmap_choice, mode=viz_mode),
+                (220, 220),
+                interpolation=cv2.INTER_NEAREST,
+            ),
             caption="Ground Truth Patch",
             use_container_width=True,
         )
@@ -604,10 +911,10 @@ def main() -> None:
         st.markdown("#### Absolute Depth Error Heatmaps ($|\\hat{D} - D_{gt}|$, darker = lower error)")
         err_max = max(0.35, float(np.percentile(np.abs(preds["bicubic"] - gt_np), 97)))
         ec1, ec2, ec3, ec4 = st.columns(4)
-        for col_ui, m_key in zip([ec1, ec2, ec3, ec4], ["bicubic", "guided", "jbf", "hybrid"]):
+        for col_ui, m_key in zip([ec1, ec2, ec3, ec4], ["bicubic", "guided", "mask_bicubic", "hybrid"]):
             err_map = np.abs(preds[m_key] - gt_np)
             col_ui.image(
-                colorize_depth(err_map, 0.0, err_max, cmap_name="magma"),
+                colorize_depth(err_map, 0.0, err_max, cmap_name="magma", near_is_warm=False),
                 caption=f"{METHOD_LABELS[m_key]} Error (Mean MAE: {err_map.mean():.4f}m)",
                 use_container_width=True,
             )
@@ -616,18 +923,135 @@ def main() -> None:
         st.subheader("Interactive 3D RGB-D Point Cloud Comparison")
         st.markdown(
             "Conventional interpolation (`Bicubic`) produces **flying pixels** bridging foreground and background objects at occlusion boundaries. "
-            "Our **Hybrid Edge-Gated Reconstruction** preserves clean 3D geometric separation."
+            "Our **Hybrid EG-DepthNet Reconstruction** preserves crisp 3D geometric step boundaries matching the Ground Truth target."
         )
-        pc1, pc2 = st.columns(2)
-        with pc1:
-            st.plotly_chart(
-                build_3d_point_cloud_figure(preds["bicubic"], rgb_np, "Bicubic Baseline (Flying Pixels at Edges)"),
-                use_container_width=True,
+
+        # 3D Viewport Controls
+        pc_c1, pc_c2, pc_c3 = st.columns([1.2, 1.0, 1.0])
+        with pc_c1:
+            pc_layout_mode = st.radio(
+                "3D Display Layout",
+                options=["side_by_side", "hero_hybrid", "hero_bicubic", "hero_gt"],
+                format_func=lambda x: {
+                    "side_by_side": "📊 3-Way Side-by-Side (Bicubic vs. Hybrid vs. Target)",
+                    "hero_hybrid": "🚀 Hero Focus: Hybrid EG-DepthNet (Full View)",
+                    "hero_bicubic": "🔎 Hero Focus: Bicubic Baseline (Inspect Flying Pixels)",
+                    "hero_gt": "🎯 Hero Focus: Ground Truth Target (Ideal Geometry)",
+                }[x],
+                horizontal=False,
             )
-        with pc2:
+        with pc_c2:
+            pc_color_mode = st.selectbox(
+                "Point Cloud Color Palette",
+                options=["rgb", "depth", "discontinuity"],
+                format_func=lambda x: {
+                    "rgb": "🎨 Realistic RGB Camera Texture",
+                    "depth": "🌈 Turbo Depth Colormap (Metric Z)",
+                    "discontinuity": "🚨 Edge & Flying Pixels Spotlight (Red Edges)",
+                }[x],
+            )
+            filter_sky = st.checkbox(
+                "Filter Sensor Sky Holes (KITTI)",
+                value=True if dataset_choice == "kitti" else False,
+                help="Suppresses the floating sky dome in KITTI outdoor scenes.",
+            )
+            disconnect_edges = st.checkbox(
+                "3D Occlusion Edge Disconnection (Zero Flying Pixels)",
+                value=True,
+                help="Prunes mixed-pixel ramp points along high-gradient boundaries so foreground objects stand completely detached from background walls in 3D without flying pixels.",
+            )
+        with pc_c3:
+            stride_choice = st.select_slider(
+                "Point Cloud Density",
+                options=[1, 2, 3],
+                value=2,
+                format_func=lambda s: {
+                    1: "Ultra Dense (1× Stride ~65k pts)",
+                    2: "High Quality (2× Stride ~16k pts)",
+                    3: "Fast Preview (3× Stride ~7k pts)",
+                }[s],
+            )
+            pt_size = st.slider("Point Size", min_value=1.5, max_value=5.0, value=3.0, step=0.5)
+
+        mask_to_use = valid_gt_np if filter_sky else None
+
+        if pc_layout_mode == "side_by_side":
+            pc1, pc2, pc3 = st.columns(3)
+            with pc1:
+                st.plotly_chart(
+                    build_3d_point_cloud_figure(
+                        preds["bicubic"],
+                        rgb_np,
+                        "Bicubic Baseline (Notice Flying Pixels at Edges)",
+                        valid_mask=mask_to_use if dataset_choice == "kitti" else None,
+                        stride=stride_choice,
+                        point_size=pt_size,
+                        dataset_name=dataset_choice,
+                        color_mode=pc_color_mode,
+                        height=520,
+                        disconnect_flying_pixels=False,
+                    ),
+                    use_container_width=True,
+                )
+            with pc2:
+                st.plotly_chart(
+                    build_3d_point_cloud_figure(
+                        preds["hybrid"],
+                        rgb_np,
+                        "Hybrid EG-DepthNet (Complete Surface, Crisp Discontinuities)",
+                        valid_mask=mask_to_use if dataset_choice == "kitti" else None,
+                        edge_gate=edge_gate_np,
+                        stride=stride_choice,
+                        point_size=pt_size,
+                        dataset_name=dataset_choice,
+                        color_mode=pc_color_mode,
+                        height=520,
+                        disconnect_flying_pixels=disconnect_edges,
+                    ),
+                    use_container_width=True,
+                )
+            with pc3:
+                st.plotly_chart(
+                    build_3d_point_cloud_figure(
+                        gt_np,
+                        rgb_np,
+                        "Ground Truth Target (Ideal 3D Geometry)",
+                        valid_mask=valid_gt_np,
+                        edge_gate=None,
+                        stride=stride_choice,
+                        point_size=pt_size,
+                        dataset_name=dataset_choice,
+                        color_mode=pc_color_mode,
+                        height=520,
+                        disconnect_flying_pixels=False,
+                    ),
+                    use_container_width=True,
+                )
+        else:
+            chosen_key = (
+                "hybrid"
+                if pc_layout_mode == "hero_hybrid"
+                else ("bicubic" if pc_layout_mode == "hero_bicubic" else "gt")
+            )
+            depth_to_plot = preds[chosen_key] if chosen_key in preds else gt_np
+            hero_title = {
+                "hybrid": "Hybrid EG-DepthNet (Crisp 3D Discontinuities — Full View)",
+                "bicubic": "Bicubic Baseline (Notice Blurry Slanted Flying Pixels — Full View)",
+                "gt": "Ground Truth Target (Ideal Metric Reference — Full View)",
+            }[chosen_key]
             st.plotly_chart(
                 build_3d_point_cloud_figure(
-                    preds["hybrid"], rgb_np, "Hybrid EG-DepthNet (Crisp 3D Object Boundaries)"
+                    depth_to_plot,
+                    rgb_np,
+                    hero_title,
+                    valid_mask=mask_to_use,
+                    edge_gate=edge_gate_np if chosen_key != "gt" else None,
+                    stride=stride_choice,
+                    point_size=pt_size,
+                    dataset_name=dataset_choice,
+                    color_mode=pc_color_mode,
+                    height=680,
+                    disconnect_flying_pixels=disconnect_edges if chosen_key != "gt" else False,
                 ),
                 use_container_width=True,
             )
@@ -642,6 +1066,8 @@ def main() -> None:
                 "PSNR",
                 "SSIM",
                 "Boundary_RMSE",
+                "DBE_acc",
+                "DBE_comp",
                 "Edge_F1",
                 "Texture_Copy_Err",
                 "Delta1",
@@ -651,7 +1077,7 @@ def main() -> None:
         ]
         st.dataframe(
             df.style.highlight_min(
-                subset=["RMSE", "MAE", "Boundary_RMSE", "Texture_Copy_Err"], color="#1b4332"
+                subset=["RMSE", "MAE", "Boundary_RMSE", "DBE_acc", "DBE_comp", "Texture_Copy_Err"], color="#1b4332"
             ).highlight_max(subset=["PSNR", "SSIM", "Edge_F1", "Delta1"], color="#1b4332"),
             use_container_width=True,
         )

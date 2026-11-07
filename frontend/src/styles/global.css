@@ -1,0 +1,85 @@
+@import './reset.css';
+@import './tokens.css';
+@import './typography.css';
+
+html {
+  overflow-x: clip;
+  max-width: 100%;
+  width: 100%;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+
+/* ── Invisible Scrollbar (Functional scroll, 100% hidden visual bar) ── */
+::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+body {
+  overflow-x: clip;
+  max-width: 100%;
+  width: 100%;
+  min-height: 100%;
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+  background-color: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  transition: background-color var(--duration-ui) var(--ease-depthlab),
+              color var(--duration-ui) var(--ease-depthlab);
+}
+
+#root {
+  min-height: 100%;
+  width: 100%;
+  overflow-x: clip;
+}
+
+/* Hairline utility */
+.hairline-b {
+  border-bottom: 1px solid var(--hairline);
+}
+.hairline-t {
+  border-top: 1px solid var(--hairline);
+}
+.hairline-r {
+  border-right: 1px solid var(--hairline);
+}
+.hairline-l {
+  border-left: 1px solid var(--hairline);
+}
+.hairline-all {
+  border: 1px solid var(--hairline);
+}
+
+/* Responsive utilities */
+@media (max-width: 900px) {
+  .desktop-only {
+    display: none !important;
+  }
+}
+@media (min-width: 901px) {
+  .mobile-only {
+    display: none !important;
+  }
+}
+
+/* Focus visibility for accessibility (00-master.md §6) */
+:focus-visible {
+  outline: 1.5px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Reduced Motion (00-master.md §4) */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

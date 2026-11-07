@@ -27,6 +27,7 @@ from depth_refine.classical.filters import (
     detect_edges_and_discontinuities,
     guided_filter,
     joint_bilateral_filter,
+    mask_bicubic_upsample,
 )
 from depth_refine.classical.hole_filling import fill_depth_holes, remove_depth_outliers
 from depth_refine.classical.interpolation import interpolate_depth
@@ -42,13 +43,16 @@ from depth_refine.models.optimization import (
 
 @dataclass
 class HybridReconstructionResult:
-    """Complete output of the Hybrid Depth Reconstruction Pipeline."""
+    """Complete output of the Two-Stage Self-Distilled Hybrid Depth Reconstruction Pipeline."""
 
-    depth_hybrid: torch.Tensor  # (B, 1, H, W) or (1, H, W) final refined high-res depth
+    depth_hybrid: torch.Tensor  # (B, 1, H, W) or (1, H, W) final refined high-res depth (Stage 2)
     depth_deep: torch.Tensor  # (B, 1, H, W) or (1, H, W) raw deep network output
     depth_classical_init: torch.Tensor  # (B, 1, H, W) or (1, H, W) classical hole-filled init
     uncertainty: torch.Tensor  # (B, 1, H, W) or (1, H, W) aleatoric uncertainty map
     edge_gate: torch.Tensor  # (B, 1, H, W) or (1, H, W) geometric discontinuity gate in [0, 1]
+    depth_mask_bicubic: Optional[torch.Tensor] = None  # Stage-1 Mask-Bicubic initialization (LoftUp (d))
+    depth_prior: Optional[torch.Tensor] = None  # Metric-aligned Structural / Depth-Anything Prior
+    feature_vis: Optional[torch.Tensor] = None  # Raw 2x/4x/8x Neural Feature Map (LoftUp (c))
 
 
 class HybridReconstructor:
@@ -178,6 +182,9 @@ class HybridReconstructor:
                     coarse_depth=out.coarse_depth.float(),
                     uncertainty=out.uncertainty.float(),
                     edge_gate=out.edge_gate.float(),
+                    depth_prior=out.depth_prior.float() if out.depth_prior is not None else None,
+                    mask_bicubic=out.mask_bicubic.float() if out.mask_bicubic is not None else None,
+                    feature_vis=out.feature_vis.float() if out.feature_vis is not None else None,
                 )
             return active_model(d_in, rgb_hr=r_in, scale=sc, valid_mask_lr=m_in)
 
@@ -191,51 +198,76 @@ class HybridReconstructor:
         d_deep = model_out.depth_hr
         uncertainty = model_out.uncertainty
         edge_gate = model_out.edge_gate
+        d_mask_bic = (
+            model_out.mask_bicubic
+            if model_out.mask_bicubic is not None
+            else mask_bicubic_upsample(depth_clean_lr, rgb_hr=rgb_hr, scale=scale, valid_mask_lr=mask_clean_lr)[0]
+        )
+        d_prior = model_out.depth_prior if model_out.depth_prior is not None else d_mask_bic
+        f_vis = model_out.feature_vis if model_out.feature_vis is not None else edge_gate
 
-        # --- STAGE 3: Iterative Back-Projection (IBP) Sensor Consistency & Dual-Stream Shock Refinement ---
+        # --- STAGE 3: Boundary-Locked Anisotropic Diffusion & Iterative Back-Projection (IBP) ---
         disc_lr = detect_edges_and_discontinuities(depth_filled_lr, rgb_lr)
         interior_valid_lr = mask_clean_lr * (1.0 - disc_lr.coherence_gate)
         conf_weight = torch.clamp(1.0 / (1.0 + uncertainty * 2.0), min=0.15, max=0.55)
-        bp_gain = 0.22 if scale <= 2 else 0.35
+        bp_gain = 0.25 if scale <= 2 else 0.35
 
-        # 3a. 2-Step Iterative Back-Projection (IBP) to eliminate low-frequency sensor drift
-        d_anchored = d_deep.clone()
+        # 3a. Dual-Stream Boundary-Preserving Planar Denoising:
+        d_planar = guided_filter(
+            d_deep,
+            rgb_hr,
+            radius=max(2, scale),
+            eps=1e-4,
+            texture_suppression=True,
+        )
+        planar_blend = 0.35 if scale <= 2 else 0.65
+        d_fused = (1.0 - edge_gate) * (planar_blend * d_planar + (1.0 - planar_blend) * d_deep) + edge_gate * d_deep
+
+        # 3b. 3-Step Boundary-Locked Anisotropic Diffusion restricted to dilated discontinuity mask
+        # Eliminates the (b) Per-image optimized halo problem while locking step transitions
+        dilated_disc = F.max_pool2d((edge_gate > 0.25).to(d_fused.dtype), kernel_size=5, stride=1, padding=2)
+        d_diff = d_fused.clone()
+        pad_rgb3 = F.pad(rgb_hr, (1, 1, 1, 1), mode="replicate")
+        patches_rgb3 = F.unfold(pad_rgb3, kernel_size=3).view(rgb_hr.shape[0], 3, 9, H, W)
+        c_dist3 = ((patches_rgb3 - rgb_hr.unsqueeze(2)) ** 2).mean(dim=1)
+        w_rgb3 = torch.exp(-c_dist3 / (2.0 * (0.025**2)))
+        diff_alpha = 0.35 if scale <= 2 else 0.65
+        for _ in range(3):
+            pad_d3 = F.pad(d_diff, (1, 1, 1, 1), mode="replicate")
+            patches_d3 = F.unfold(pad_d3, kernel_size=3).view(d_diff.shape[0], 9, H, W)
+            w_d3 = torch.exp(-((patches_d3 - d_diff) ** 2) / (2.0 * (0.12**2)))
+            w_aniso = w_rgb3 * w_d3
+            d_step = (patches_d3 * w_aniso).sum(dim=1, keepdim=True) / torch.clamp(
+                w_aniso.sum(dim=1, keepdim=True), min=1e-6
+            )
+            d_diff = (dilated_disc * diff_alpha) * d_step + (1.0 - dilated_disc * diff_alpha) * d_diff
+
+        # 3c. Multi-Scale Edge-Gated Shock Filter & Mode Snapping
+        d_cur = d_diff
+        shock_gain = 0.25 if scale <= 2 else 0.75
+        shock_mask = torch.clamp((edge_gate - 0.35) / 0.45, min=0.0, max=1.0) * shock_gain
+        for k in (3, 5):
+            pad = k // 2
+            d_erode = -F.max_pool2d(-d_cur, kernel_size=k, stride=1, padding=pad)
+            d_dilate = F.max_pool2d(d_cur, kernel_size=k, stride=1, padding=pad)
+            d_mid = 0.5 * (d_erode + d_dilate)
+            target = torch.where(d_cur <= d_mid, d_erode, d_dilate)
+            d_cur = (1.0 - shock_mask) * d_cur + shock_mask * target
+
+        if scale >= 4:
+            d_snapped, _ = bilateral_mode_snap_and_denoise(d_cur, rgb_hr, scale=scale)
+        else:
+            d_snapped = d_cur
+
+        # 3d. Final 2-Step Iterative Back-Projection (IBP) to anchor valid low-res sensor measurements
+        d_anchored = d_snapped
         for _ in range(2):
             pred_lr = F.adaptive_avg_pool2d(d_anchored, depth_lr.shape[-2:])
             residual_lr = (depth_clean_lr - pred_lr) * interior_valid_lr
             residual_hr = F.interpolate(residual_lr, size=(H, W), mode="bilinear", align_corners=False)
             d_anchored = d_anchored + bp_gain * conf_weight * (1.0 - edge_gate) * residual_hr
 
-        # 3b. Dual-Stream Trilateral Separation:
-        # Planar Stream: Texture-suppressed guided filter minimizes RMSE & prevents wallpaper bleed
-        d_planar = guided_filter(
-            d_anchored, rgb_hr, radius=max(3, scale), eps=1e-4, texture_suppression=True
-        )
-
-        # Boundary Stream: Fine sub-pixel Joint Bilateral filter preserves sharp step discontinuities
-        polish_k = 3 if scale <= 2 else 5
-        d_boundary = joint_bilateral_filter(
-            d_anchored,
-            rgb_hr,
-            kernel_size=polish_k,
-            sigma_spatial=1.0 if scale <= 2 else 1.6,
-            sigma_color=0.028,
-            sigma_depth=0.18,
-            iterations=1,
-            texture_suppression=True,
-        )
-
-        # Dynamic Edge-Coherence Fusion
-        d_fused = (1.0 - edge_gate) * d_planar + edge_gate * d_boundary
-
-        # 3c. Edge-Gated Morphological Shock Filter (snaps 1-px boundary ramps to crisp step discontinuities)
-        d_erode = -F.max_pool2d(-d_fused, kernel_size=3, stride=1, padding=1)
-        d_dilate = F.max_pool2d(d_fused, kernel_size=3, stride=1, padding=1)
-        d_mid_local = 0.5 * (d_erode + d_dilate)
-        shock_target = torch.where(d_fused <= d_mid_local, d_erode, d_dilate)
-        shock_gate = torch.clamp((edge_gate - 0.35) / 0.65, min=0.0, max=1.0) * 0.22
-        d_hybrid = (1.0 - shock_gate) * d_fused + shock_gate * shock_target
-        d_hybrid = torch.clamp(d_hybrid, min=0.05)
+        d_hybrid = torch.clamp(d_anchored, min=0.05)
 
         if squeeze:
             return HybridReconstructionResult(
@@ -244,6 +276,9 @@ class HybridReconstructor:
                 depth_classical_init=d_bicubic_hr.squeeze(0).to(orig_device),
                 uncertainty=uncertainty.squeeze(0).to(orig_device),
                 edge_gate=edge_gate.squeeze(0).to(orig_device),
+                depth_mask_bicubic=d_mask_bic.squeeze(0).to(orig_device),
+                depth_prior=d_prior.squeeze(0).to(orig_device),
+                feature_vis=f_vis.squeeze(0).to(orig_device),
             )
 
         return HybridReconstructionResult(
@@ -252,4 +287,7 @@ class HybridReconstructor:
             depth_classical_init=d_bicubic_hr.to(orig_device),
             uncertainty=uncertainty.to(orig_device),
             edge_gate=edge_gate.to(orig_device),
+            depth_mask_bicubic=d_mask_bic.to(orig_device),
+            depth_prior=d_prior.to(orig_device),
+            feature_vis=f_vis.to(orig_device),
         )

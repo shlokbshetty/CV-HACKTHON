@@ -115,7 +115,7 @@ def save_training_curves(history: List[Dict[str, Any]], output_dir: Path = Path(
     plt.close(fig)
 
 
-def train(config: Dict[str, Any], quick_pretrain: bool = False) -> Path:
+def train(config: Dict[str, Any], quick_pretrain: bool = False, resume_path: Optional[str] = None) -> Path:
     hw_cfg = config.get("hardware", {})
     data_cfg = config.get("data", {})
     model_cfg = config.get("model", {})
@@ -186,6 +186,22 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False) -> Path:
     ema_model = copy.deepcopy(model).to(device)
     ema_decay = float(model_cfg.get("ema_decay", 0.992))
 
+    best_rmse = float("inf")
+    history: List[Dict[str, Any]] = []
+
+    if resume_path and Path(resume_path).exists():
+        console.print(f"[bold cyan]Resuming/fine-tuning weights from checkpoint: {resume_path}[/bold cyan]")
+        ckpt = torch.load(resume_path, map_location=device, weights_only=False)
+        if "model_state_dict" in ckpt:
+            model.load_state_dict(ckpt["model_state_dict"])
+        if "ema_state_dict" in ckpt:
+            ema_model.load_state_dict(ckpt["ema_state_dict"])
+        if "val_metrics" in ckpt and "RMSE" in ckpt["val_metrics"]:
+            best_rmse = float(ckpt["val_metrics"]["RMSE"])
+            console.print(f"[bold cyan]Baseline checkpoint Best RMSE: {best_rmse:.4f}m[/bold cyan]")
+        if "history" in ckpt and isinstance(ckpt["history"], list):
+            history = list(ckpt["history"])
+
     criterion = GeometryAwareDepthLoss(
         w_charbonnier=float(loss_cfg.get("w_charbonnier", 1.0)),
         w_grad=float(loss_cfg.get("w_grad", 0.65)),
@@ -211,10 +227,8 @@ def train(config: Dict[str, Any], quick_pretrain: bool = False) -> Path:
         f"TrainSamples={len(train_ds)}, HeldOutValSamples={len(val_ds)})[/bold green]"
     )
 
-    best_rmse = float("inf")
     epochs_without_improvement = 0
     scales_cycle = [2, 4, 8]
-    history: List[Dict[str, Any]] = []
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -328,6 +342,12 @@ def main() -> None:
     parser.add_argument("--epochs", type=int, default=None, help="Override number of training epochs")
     parser.add_argument("--batch-size", type=int, default=None, help="Override training batch size")
     parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Path to checkpoint to resume training or fine-tune from",
+    )
+    parser.add_argument(
         "--quick-pretrain",
         action="store_true",
         help="Run a fast 8-epoch multi-scale pre-training pass on 3D geometric scenes (<40s)",
@@ -350,7 +370,7 @@ def main() -> None:
             config["training"] = {}
         config["training"]["batch_size"] = args.batch_size
 
-    train(config, quick_pretrain=args.quick_pretrain)
+    train(config, quick_pretrain=args.quick_pretrain, resume_path=args.resume)
 
 
 if __name__ == "__main__":

@@ -16,9 +16,6 @@ COPY configs/ ./configs/
 
 RUN pip install --no-cache-dir -e .
 
-# Prepare lightweight Middlebury & benchmark caches for instant live demo
-RUN python scripts/download_datasets.py --dataset all --fast-middlebury
-
 EXPOSE 8501
 
 HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1

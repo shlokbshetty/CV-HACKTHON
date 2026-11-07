@@ -1,0 +1,60 @@
+:root {
+  /* Dennis Snellenberg Day Palette */
+  --paper: #ECECEC;
+  --ink: #1C1D20;
+  --ink-muted: #737376;
+  --hairline: rgba(28, 29, 32, 0.10);
+  --card-bg: rgba(255, 255, 255, 0.85);
+  --hover-tint: rgba(28, 29, 32, 0.04);
+  --accent: #455CE9;
+  --cursor-color: #1C1D20;
+
+  /* Workspace Tokens */
+  --viewport: #E2E2E4;
+  --panel: #F4F4F6;
+  --panel-raised: #FFFFFF;
+  --border: rgba(28, 29, 32, 0.12);
+  --text: #1C1D20;
+  --muted: #6B7280;
+
+  /* Spacing Grid (4px base) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* Dennis Snellenberg Radii */
+  --radius-landing: 16px;
+  --radius-card: 24px;
+  --radius-pill: 999px;
+
+  /* Motion */
+  --ease-depthlab: cubic-bezier(0.25, 1, 0.5, 1);
+  --duration-ui: 240ms;
+}
+
+[data-theme="night"] {
+  /* Dennis Snellenberg Iconic Dark Palette */
+  --paper: #1C1D20;
+  --ink: #FFFFFF;
+  --ink-muted: #999999;
+  --hairline: rgba(255, 255, 255, 0.10);
+  --card-bg: rgba(255, 255, 255, 0.05);
+  --hover-tint: rgba(255, 255, 255, 0.04);
+  --accent: #455CE9;
+  --cursor-color: #FFFFFF;
+
+  /* Workspace Night */
+  --viewport: #141517;
+  --panel: #18191B;
+  --panel-raised: #202125;
+  --border: rgba(255, 255, 255, 0.12);
+  --text: #FFFFFF;
+  --muted: #8A949D;
+}

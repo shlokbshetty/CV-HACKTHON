@@ -25,8 +25,12 @@ def remove_depth_outliers(
     jump_threshold: float = 0.65,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    Detect and suppress isolated salt-and-pepper sensor outlier spikes while preserving
-    legitimate step edges (which have consistent support on at least 2-3 neighbors).
+    Detect and suppress isolated salt-and-pepper sensor outlier spikes and stray floating pixels
+    while strictly preserving legitimate step edges (which have consistent contiguous support).
+
+    Uses a dual-stage filter:
+    1. Prune isolated pixels that have fewer than 2 valid 8-neighbors in a 3x3 window.
+    2. Statistical Patch Median & MAD outlier suppression across valid 5x5 patches.
 
     Args:
         depth: (B, 1, H, W) or (1, H, W) depth tensor.
@@ -44,40 +48,60 @@ def remove_depth_outliers(
         squeeze = True
 
     if valid_mask is None:
-        valid_mask = (depth > 1e-3).to(depth.dtype)
+        valid_mask = ((depth > 1e-3) & torch.isfinite(depth)).to(depth.dtype)
     else:
-        valid_mask = valid_mask.to(depth.dtype)
+        valid_mask = ((valid_mask > 0.5) & (depth > 1e-3) & torch.isfinite(depth)).to(depth.dtype)
 
-    # Extract 3x3 patches to check how many neighbors agree with the center pixel
     B, C, H, W = depth.shape
-    padded_d = F.pad(depth * valid_mask, (1, 1, 1, 1), mode="replicate")
-    padded_m = F.pad(valid_mask, (1, 1, 1, 1), mode="constant", value=0.0)
+    d_clean = depth.clone()
+    m_clean = valid_mask.clone()
 
-    patches_d = F.unfold(padded_d, kernel_size=3).view(B, 9, H, W)
-    patches_m = F.unfold(padded_m, kernel_size=3).view(B, 9, H, W)
+    # Pass 1: Prune completely isolated floating pixels with < 2 valid 8-neighbors
+    pad_m = F.pad(m_clean, (1, 1, 1, 1), mode="constant", value=0.0)
+    patches_m = F.unfold(pad_m, kernel_size=3).view(B, 9, H, W)
+    # Exclude center pixel (index 4)
+    neighbor_valid_cnt = patches_m[:, :4, :, :].sum(dim=1, keepdim=True) + patches_m[:, 5:, :, :].sum(dim=1, keepdim=True)
+    isolated = (m_clean > 0.5) & (neighbor_valid_cnt < 2)
+    m_clean = torch.where(isolated, torch.zeros_like(m_clean), m_clean)
+    d_clean = torch.where(isolated, torch.zeros_like(d_clean), d_clean)
 
-    # Compute valid neighborhood median approximation and agreement count
-    diff = torch.abs(patches_d - depth) * patches_m
-    close_neighbors = ((diff < jump_threshold) & (patches_m > 0.5)).sum(dim=1, keepdim=True)
-    total_valid_neighbors = (patches_m > 0.5).sum(dim=1, keepdim=True)
+    # Pass 2: Two-Iteration Valid-Masked 5x5 Patch Median & MAD Z-Score Outlier Rejection
+    # Uses exact order-statistic median over valid pixels so outlier spikes never corrupt local statistics
+    for _ in range(2):
+        pad_d = F.pad(d_clean, (2, 2, 2, 2), mode="replicate")
+        pad_m5 = F.pad(m_clean, (2, 2, 2, 2), mode="constant", value=0.0)
+        patches_d5 = F.unfold(pad_d, kernel_size=5).view(B, 25, H, W)
+        patches_m5 = F.unfold(pad_m5, kernel_size=5).view(B, 25, H, W)
 
-    # Adaptive neighbor quorum: flags isolated spikes even in sparse / hole-adjacent regions
-    min_required = torch.clamp((total_valid_neighbors * 0.4).long(), min=2, max=4)
-    is_spike = (valid_mask > 0.5) & (total_valid_neighbors >= 3) & (close_neighbors < min_required)
+        n_valid5 = patches_m5.sum(dim=1, keepdim=True)
+        # Compute valid patch median by replacing invalid entries with +inf and indexing the middle valid rank
+        valid_bool5 = patches_m5 > 0.5
+        d_sorted, _ = torch.where(valid_bool5, patches_d5, torch.full_like(patches_d5, 1e6)).sort(dim=1)
+        mid_idx = torch.clamp((n_valid5.long() - 1) // 2, min=0, max=24)
+        median_d = torch.gather(d_sorted, dim=1, index=mid_idx)
+        median_d = torch.where(n_valid5 > 0.5, median_d, d_clean)
 
-    # Replace spike with mean of valid non-center neighbors
-    neighbor_mask = patches_m.clone()
-    neighbor_mask[:, 4, :, :] = 0.0
-    neighbor_sum = (patches_d * neighbor_mask).sum(dim=1, keepdim=True)
-    neighbor_cnt = neighbor_mask.sum(dim=1, keepdim=True)
+        # Compute Median Absolute Deviation (MAD) over valid neighbors
+        abs_dev = torch.abs(patches_d5 - median_d)
+        dev_sorted, _ = torch.where(valid_bool5, abs_dev, torch.full_like(abs_dev, 1e6)).sort(dim=1)
+        mad_d = torch.gather(dev_sorted, dim=1, index=mid_idx)
+        mad_d = torch.where(n_valid5 > 0.5, mad_d, torch.zeros_like(mad_d))
 
-    replacement = neighbor_sum / torch.clamp(neighbor_cnt, min=1.0)
-    cleaned_depth = torch.where(is_spike, replacement, depth)
-    updated_mask = valid_mask.clone()
+        # Z-score threshold (robust to clustered spikes and high sparsity)
+        z_thresh = torch.clamp(3.2 * (1.4826 * mad_d) + 0.12, min=0.18, max=jump_threshold)
+        center_dev = torch.abs(d_clean - median_d)
+
+        # Count how many valid neighbors in 5x5 agree with the center pixel's depth
+        diff_center = torch.abs(patches_d5 - d_clean)
+        agree_cnt = ((diff_center < 0.22) & valid_bool5).sum(dim=1, keepdim=True).to(depth.dtype)
+        min_quorum = torch.clamp(0.24 * n_valid5, min=2.0, max=5.0)
+
+        is_spike = (m_clean > 0.5) & (n_valid5 >= 3) & ((center_dev > z_thresh) | (agree_cnt < min_quorum)) & (center_dev > 0.18)
+        d_clean = torch.where(is_spike, median_d, d_clean)
 
     if squeeze:
-        return cleaned_depth.squeeze(0), updated_mask.squeeze(0)
-    return cleaned_depth, updated_mask
+        return d_clean.squeeze(0), m_clean.squeeze(0)
+    return d_clean, m_clean
 
 
 def fill_depth_holes(
