@@ -433,11 +433,12 @@ def main() -> None:
             )
 
         upload_mode = st.radio(
-            "Select Sensor Input Mode",
-            options=["paired_rgbd", "preset_samples"],
+            "Select Sensor / Image Input Mode",
+            options=["photo_only", "paired_rgbd", "preset_samples"],
             format_func=lambda x: {
-                "paired_rgbd": "📁 Upload Sensor Files (RGB Guidance Image + Real Depth Map)",
-                "preset_samples": "🎯 1-Click Hardware Sensor Demos (Calibrated Stereo & Structured Light)",
+                "photo_only": "📷 Upload Any Phone / Camera Photo (Automatic 3D Depth + Edge Refinement)",
+                "paired_rgbd": "🛰️ Upload Paired Sensor Capture (Color Image + Real Depth Map)",
+                "preset_samples": "🎯 1-Click Calibrated Hardware Demos (Middlebury Structured Light & Stereo)",
             }[x],
             horizontal=True,
         )
@@ -451,7 +452,7 @@ def main() -> None:
 
         rgb_np = None
         depth_np = None
-        sample_name = "custom_sensor"
+        sample_name = "custom_camera"
 
         PRESET_MAP = {
             "Art Studio & Easel (artroom1)": Path("data/middleburry/data/artroom1"),
@@ -461,7 +462,29 @@ def main() -> None:
             "Roller Skates (skates1)": Path("data/middleburry/data/skates1"),
         }
 
-        if upload_mode == "preset_samples":
+        if upload_mode == "photo_only":
+            st.info("💡 **Single Photo Mode**: Upload any photo from your phone or camera. The application automatically generates an edge-preserving geometric depth map, simulates sensor decimation & holes, and uses **EG-DepthNet** to reconstruct razor-sharp 3D boundaries!")
+            rgb_file = st.file_uploader(
+                "Upload Camera Photo (.jpg, .png, .jpeg, .webp)",
+                type=["png", "jpg", "jpeg", "webp"],
+                key="single_camera_photo_uploader",
+            )
+            if rgb_file is not None:
+                file_bytes = np.asarray(bytearray(rgb_file.read()), dtype=np.uint8)
+                bgr = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+                if bgr is not None:
+                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                    sample_name = Path(rgb_file.name).stem
+            else:
+                st.caption("ℹ️ *Awaiting your photo upload. Displaying sample 'Art Studio' scene below:*")
+                p_dir = PRESET_MAP["Art Studio & Easel (artroom1)"]
+                rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
+                if rgb_path and rgb_path.exists():
+                    bgr = cv2.imread(str(rgb_path), cv2.IMREAD_COLOR)
+                    rgb_np = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                sample_name = "demo_art_studio"
+
+        elif upload_mode == "preset_samples":
             preset_choice = st.selectbox("Choose a Calibrated Hardware Sensor Scene", options=list(PRESET_MAP.keys()))
             p_dir = PRESET_MAP[preset_choice]
             rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
@@ -548,11 +571,14 @@ def main() -> None:
         rgb_cropped = rgb_np[cy - crop_dim // 2 : cy + crop_dim // 2, cx - crop_dim // 2 : cx + crop_dim // 2]
         rgb_res = cv2.resize(rgb_cropped, (target_res, target_res))
 
-        dh_orig, dw_orig = depth_np.shape[:2]
-        d_dim = min(dh_orig, dw_orig)
-        dcy, dcx = dh_orig // 2, dw_orig // 2
-        d_cropped = depth_np[dcy - d_dim // 2 : dcy + d_dim // 2, dcx - d_dim // 2 : dcx + d_dim // 2]
-        depth_res = cv2.resize(d_cropped, (target_res, target_res), interpolation=cv2.INTER_NEAREST)
+        if depth_np is not None:
+            dh_orig, dw_orig = depth_np.shape[:2]
+            d_dim = min(dh_orig, dw_orig)
+            dcy, dcx = dh_orig // 2, dw_orig // 2
+            d_cropped = depth_np[dcy - d_dim // 2 : dcy + d_dim // 2, dcx - d_dim // 2 : dcx + d_dim // 2]
+            depth_res = cv2.resize(d_cropped, (target_res, target_res), interpolation=cv2.INTER_NEAREST)
+        else:
+            depth_res = generate_camera_depth_prior(rgb_res)
 
         rgb_t = torch.from_numpy(rgb_res.transpose(2, 0, 1)).float()
         depth_t = torch.from_numpy(depth_res[None, ...]).float()
