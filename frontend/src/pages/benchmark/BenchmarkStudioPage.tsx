@@ -77,25 +77,65 @@ const DATASETS: Record<string, DatasetMetadata> = {
   },
 };
 
-const MIDDLEBURY_SCENES = [
-  { id: 'artroom1', label: 'Scene 0: Art Studio & Easel (artroom1)' },
-  { id: 'artroom2', label: 'Scene 1: Art Studio Angle 2 (artroom2)' },
-  { id: 'bandsaw1', label: 'Scene 2: Bandsaw Workshop (bandsaw1)' },
-  { id: 'bandsaw2', label: 'Scene 3: Bandsaw Detail (bandsaw2)' },
-  { id: 'chess1', label: 'Scene 4: Chessboard & Pieces (chess1)' },
-  { id: 'chess2', label: 'Scene 5: Chessboard Slanted (chess2)' },
-  { id: 'chess3', label: 'Scene 6: Chessboard Top-Down (chess3)' },
-  { id: 'curule1', label: 'Scene 7: Curule Chair (curule1)' },
-  { id: 'curule2', label: 'Scene 8: Curule Detail (curule2)' },
-  { id: 'curule3', label: 'Scene 9: Curule Side View (curule3)' },
-  { id: 'ladder1', label: 'Scene 10: Ladder & Scaffolding (ladder1)' },
-  { id: 'ladder2', label: 'Scene 11: Ladder Angle 2 (ladder2)' },
-  { id: 'octogons1', label: 'Scene 12: Geometric Octogons (octogons1)' },
-  { id: 'octogons2', label: 'Scene 13: Octogons Perspective (octogons2)' },
-  { id: 'pendulum1', label: 'Scene 14: Physics Pendulum (pendulum1)' },
-  { id: 'pendulum2', label: 'Scene 15: Pendulum High-Frequency (pendulum2)' },
-];
+export interface SceneInfo {
+  id: string;
+  label: string;
+  name: string;
+  description: string;
+}
 
+export const DATASET_SCENES: Record<string, SceneInfo[]> = {
+  middlebury: [
+    { id: 'artroom1', label: 'Scene 0: Art Studio & Easel (artroom1)', name: 'Art Studio & Easel', description: 'Complex indoor easel & fine brush textures' },
+    { id: 'artroom2', label: 'Scene 1: Art Studio Angle 2 (artroom2)', name: 'Art Studio Angle 2', description: 'Secondary camera angle with deep shadows' },
+    { id: 'bandsaw1', label: 'Scene 2: Bandsaw Workshop (bandsaw1)', name: 'Bandsaw Workshop', description: 'Sharp metal edges, machine blade, and workshop tools' },
+    { id: 'bandsaw2', label: 'Scene 3: Bandsaw Detail (bandsaw2)', name: 'Bandsaw Detail', description: 'Close perspective on high-contrast metal frame' },
+    { id: 'chess1', label: 'Scene 4: Chessboard & Pieces (chess1)', name: 'Chessboard & Pieces', description: 'High-frequency alternating grid & fine wooden chess pawns' },
+    { id: 'chess2', label: 'Scene 5: Chessboard Slanted (chess2)', name: 'Chessboard Slanted', description: 'Severe perspective slant & sharp piece occlusions' },
+    { id: 'chess3', label: 'Scene 6: Chessboard Top-Down (chess3)', name: 'Chessboard Top-Down', description: 'Steep planar angle with sub-pixel piece boundaries' },
+    { id: 'curule1', label: 'Scene 7: Curule Chair (curule1)', name: 'Curule Chair', description: 'Curved wooden antique chair legs and thin spindles' },
+    { id: 'curule2', label: 'Scene 8: Curule Detail (curule2)', name: 'Curule Detail', description: 'Curved wood joints and high-contrast backdrop' },
+    { id: 'curule3', label: 'Scene 9: Curule Side View (curule3)', name: 'Curule Side View', description: 'Extreme depth step discontinuities around chair legs' },
+    { id: 'ladder1', label: 'Scene 10: Ladder & Scaffolding (ladder1)', name: 'Ladder & Scaffolding', description: 'Thin vertical rungs, step discontinuities, and background poles' },
+    { id: 'ladder2', label: 'Scene 11: Ladder Angle 2 (ladder2)', name: 'Ladder Angle 2', description: 'Slanted rungs and high-frequency structural shadow edges' },
+    { id: 'octogons1', label: 'Scene 12: Geometric Octogons (octogons1)', name: 'Geometric Octogons', description: 'Sharp polygonal geometric facets and multi-planar relief' },
+    { id: 'octogons2', label: 'Scene 13: Octogons Perspective (octogons2)', name: 'Octogons Perspective', description: 'Steep angular facets with deep occlusion boundaries' },
+    { id: 'pendulum1', label: 'Scene 14: Physics Pendulum (pendulum1)', name: 'Physics Pendulum', description: 'Ultra-thin suspension wire and spherical metallic bob' },
+    { id: 'pendulum2', label: 'Scene 15: Pendulum High-Frequency (pendulum2)', name: 'Pendulum High-Frequency', description: 'Moving pendulum trajectory with fine wire detail' },
+  ],
+  nyuv2: [
+    { id: 'nyuv2_0', label: 'Scene 0: NYUv2 Office Workstation', name: 'NYUv2 Office Workstation', description: 'Kinect v1 capture with office desk, computer monitor & rolling chair' },
+    { id: 'nyuv2_1', label: 'Scene 1: NYUv2 Living Room & Sofa', name: 'NYUv2 Living Room', description: 'Living room couch, coffee table & carpet boundary' },
+    { id: 'nyuv2_2', label: 'Scene 2: NYUv2 Kitchen Counter', name: 'NYUv2 Kitchen Counter', description: 'Kitchen counter, cabinets & reflective surfaces' },
+    { id: 'nyuv2_3', label: 'Scene 3: NYUv2 Bedroom & Frame', name: 'NYUv2 Bedroom', description: 'Bed frames, pillows & deep absorption shadow corners' },
+    { id: 'nyuv2_4', label: 'Scene 4: NYUv2 Library & Bookshelf', name: 'NYUv2 Library', description: 'Bookshelf compartments, books & desk silhouettes' },
+    { id: 'nyuv2_5', label: 'Scene 5: NYUv2 Indoor Corridor', name: 'NYUv2 Indoor Corridor', description: 'Long hallway corridor with perspective vanishing lines' },
+    { id: 'nyuv2_6', label: 'Scene 6: NYUv2 Conference Room', name: 'NYUv2 Conference Room', description: 'Large conference table with multiple rolling chairs' },
+    { id: 'nyuv2_7', label: 'Scene 7: NYUv2 Dining Table & Chairs', name: 'NYUv2 Dining Room', description: 'Dining chairs with thin vertical spindles & tableware' },
+  ],
+  kitti: [
+    { id: 'kitti_0', label: 'Scene 0: KITTI Drive 0093 Urban', name: 'KITTI Drive 0093 Urban', description: 'Urban roadway, curbs, cars & telephone poles under 97% sparsity' },
+    { id: 'kitti_1', label: 'Scene 1: KITTI Drive 0064 Residential', name: 'KITTI Drive 0064 Residential', description: 'Residential street with parked vehicles & vegetation' },
+    { id: 'kitti_2', label: 'Scene 2: KITTI Drive 0051 Intersection', name: 'KITTI Drive 0051 Intersection', description: 'City intersection with moving traffic & pedestrian silhouettes' },
+    { id: 'kitti_3', label: 'Scene 3: KITTI Drive 0070 Highway', name: 'KITTI Drive 0070 Highway', description: 'High-speed roadway with guardrails & distant horizon' },
+    { id: 'kitti_4', label: 'Scene 4: KITTI Drive 0084 Commercial', name: 'KITTI Drive 0084 Commercial', description: 'Commercial storefronts with storefront glass reflections' },
+    { id: 'kitti_5', label: 'Scene 5: KITTI Drive 0091 Overpass', name: 'KITTI Drive 0091 Overpass', description: 'Concrete bridge pillars & road elevation changes' },
+    { id: 'kitti_6', label: 'Scene 6: KITTI Drive 0018 Crosswalk', name: 'KITTI Drive 0018 Crosswalk', description: 'Urban crosswalk with stop signs & streetlamps' },
+    { id: 'kitti_7', label: 'Scene 7: KITTI Drive 0027 Boulevard', name: 'KITTI Drive 0027 Boulevard', description: 'Wide tree-lined boulevard with complex specular reflections' },
+  ],
+  synthetic: [
+    { id: 'synthetic_0', label: 'Scene 0: Stress Checkerboard', name: 'Stress Checkerboard', description: 'High-contrast alternating frequency checkerboard pattern' },
+    { id: 'synthetic_1', label: 'Scene 1: Stress Grating Stripes', name: 'Stress Grating Stripes', description: 'Fine horizontal & vertical bar grating patterns' },
+    { id: 'synthetic_2', label: 'Scene 2: Stress Concentric Rings', name: 'Stress Concentric Rings', description: 'Circular high-frequency ripple texture' },
+    { id: 'synthetic_3', label: 'Scene 3: Stress Voronoi Mosaic', name: 'Stress Voronoi Mosaic', description: 'Multi-facet Voronoi cell mosaic with sharp color borders' },
+    { id: 'synthetic_4', label: 'Scene 4: Stress Lattice Wireframe', name: 'Stress Lattice Wireframe', description: 'Fine wireframe lattice overlay on planar backdrop' },
+    { id: 'synthetic_5', label: 'Scene 5: Stress Perlin Displacement', name: 'Stress Perlin Displacement', description: 'Continuous multi-scale Perlin noise texture' },
+    { id: 'synthetic_6', label: 'Scene 6: Stress Calibrated Ramp', name: 'Stress Calibrated Ramp', description: 'Calibrated step-edge height ramp with noisy color' },
+    { id: 'synthetic_7', label: 'Scene 7: Stress Impulse Spikes', name: 'Stress Impulse Spikes', description: 'Dirac delta impulse depth spikes & sparse holes' },
+  ],
+};
+
+const MIDDLEBURY_SCENES = DATASET_SCENES.middlebury;
 const PRESET_SCENES = MIDDLEBURY_SCENES;
 
 const COLORMAP_OPTIONS = [
@@ -222,34 +262,53 @@ export const BenchmarkStudioPage: React.FC = () => {
       .catch(() => {});
   }, []);
 
+  // Active dataset scenes list and max count
+  const currentDatasetScenes = useMemo(() => {
+    return DATASET_SCENES[dataset] || DATASET_SCENES.middlebury;
+  }, [dataset]);
+
+  const maxSceneIdx = Math.max(0, currentDatasetScenes.length - 1);
+
   // Determine active asset key based on dataset and sceneIdx
   const activeAssetKey = useMemo(() => {
     if (dataset === 'custom_upload') {
       if (uploadMode === 'preset_samples') return scenePreset;
       return 'artroom1';
     }
-    if (dataset === 'middlebury') {
-      const targetScene = MIDDLEBURY_SCENES[sceneIdx % MIDDLEBURY_SCENES.length]?.id;
-      return targetScene || scenePreset || 'artroom1';
-    }
-    return dataset;
+    const scenes = DATASET_SCENES[dataset] || DATASET_SCENES.middlebury;
+    const targetScene = scenes[sceneIdx % scenes.length];
+    return targetScene?.id || dataset;
   }, [dataset, uploadMode, scenePreset, sceneIdx]);
 
+  const activeSceneInfo = useMemo(() => {
+    const scenes = DATASET_SCENES[dataset] || DATASET_SCENES.middlebury;
+    return scenes[sceneIdx % scenes.length] || scenes[0];
+  }, [dataset, sceneIdx]);
+
   const handleSceneIndexChange = (newIdx: number) => {
-    const clamped = Math.max(0, Math.min(15, isNaN(newIdx) ? 0 : newIdx));
+    const clamped = Math.max(0, Math.min(maxSceneIdx, isNaN(newIdx) ? 0 : newIdx));
     setSceneIdx(clamped);
-    if (dataset === 'middlebury') {
-      const sId = MIDDLEBURY_SCENES[clamped % MIDDLEBURY_SCENES.length]?.id || 'artroom1';
-      setScenePreset(sId);
-    }
+    const scenes = DATASET_SCENES[dataset] || DATASET_SCENES.middlebury;
+    const sId = scenes[clamped % scenes.length]?.id;
+    if (sId) setScenePreset(sId);
   };
 
   const handlePresetSelect = (presetId: string) => {
     setScenePreset(presetId);
-    const idx = MIDDLEBURY_SCENES.findIndex((s) => s.id === presetId);
+    const scenes = DATASET_SCENES[dataset] || DATASET_SCENES.middlebury;
+    const idx = scenes.findIndex((s) => s.id === presetId);
     if (idx >= 0) {
       setSceneIdx(idx);
     }
+  };
+
+  const handleDatasetChange = (newDatasetId: string) => {
+    setDataset(newDatasetId);
+    setIsDatasetOpen(false);
+    const newScenes = DATASET_SCENES[newDatasetId] || DATASET_SCENES.middlebury;
+    const nextIdx = Math.min(sceneIdx, newScenes.length - 1);
+    setSceneIdx(nextIdx);
+    setScenePreset(newScenes[nextIdx]?.id || 'artroom1');
   };
 
   // Read current metrics from manifest with fallback
@@ -577,10 +636,7 @@ export const BenchmarkStudioPage: React.FC = () => {
                 {Object.values(DATASETS).map((d) => (
                   <div
                     key={d.id}
-                    onClick={() => {
-                      setDataset(d.id);
-                      setIsDatasetOpen(false);
-                    }}
+                    onClick={() => handleDatasetChange(d.id)}
                     style={{
                       padding: '8px 10px',
                       borderRadius: '6px',
@@ -930,7 +986,7 @@ export const BenchmarkStudioPage: React.FC = () => {
                     color: '#60A5FA',
                   }}
                 >
-                  Scene {sceneIdx} of 15
+                  Scene {sceneIdx} of {maxSceneIdx}
                 </span>
               </div>
 
@@ -962,7 +1018,7 @@ export const BenchmarkStudioPage: React.FC = () => {
                 <input
                   type="number"
                   min={0}
-                  max={15}
+                  max={maxSceneIdx}
                   value={sceneIdx}
                   onChange={(e) => handleSceneIndexChange(parseInt(e.target.value, 10))}
                   style={{
@@ -982,17 +1038,17 @@ export const BenchmarkStudioPage: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => handleSceneIndexChange(sceneIdx + 1)}
-                  disabled={sceneIdx >= 15}
+                  disabled={sceneIdx >= maxSceneIdx}
                   style={{
                     width: '32px',
                     height: '32px',
                     borderRadius: '6px',
-                    backgroundColor: sceneIdx >= 15 ? 'rgba(255, 255, 255, 0.03)' : 'rgba(255, 255, 255, 0.08)',
+                    backgroundColor: sceneIdx >= maxSceneIdx ? 'rgba(255, 255, 255, 0.03)' : 'rgba(255, 255, 255, 0.08)',
                     border: '1px solid rgba(255, 255, 255, 0.15)',
-                    color: sceneIdx >= 15 ? '#4B5563' : '#FFFFFF',
+                    color: sceneIdx >= maxSceneIdx ? '#4B5563' : '#FFFFFF',
                     fontSize: '15px',
                     fontWeight: 700,
-                    cursor: sceneIdx >= 15 ? 'not-allowed' : 'pointer',
+                    cursor: sceneIdx >= maxSceneIdx ? 'not-allowed' : 'pointer',
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
@@ -1007,19 +1063,17 @@ export const BenchmarkStudioPage: React.FC = () => {
               <input
                 type="range"
                 min={0}
-                max={15}
+                max={maxSceneIdx}
                 value={sceneIdx}
                 onChange={(e) => handleSceneIndexChange(Number(e.target.value))}
                 style={{ width: '100%', accentColor: '#3B82F6', cursor: 'pointer' }}
               />
 
               {/* Active scene name feedback */}
-              {dataset === 'middlebury' && (
-                <div style={{ fontSize: '10.5px', color: '#9CA3AF', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <span>Current Scene:</span>
-                  <code style={{ color: '#10B981', fontWeight: 600 }}>{activeAssetKey}</code>
-                </div>
-              )}
+              <div style={{ fontSize: '10.5px', color: '#9CA3AF', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span>Current Scene:</span>
+                <code style={{ color: '#10B981', fontWeight: 600 }}>{activeSceneInfo.name || activeAssetKey}</code>
+              </div>
             </div>
           )}
 
@@ -1361,18 +1415,21 @@ export const BenchmarkStudioPage: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
                 <div>
                   <div style={{ fontSize: '18px', fontWeight: 700, color: '#FFFFFF', letterSpacing: '-0.02em' }}>
-                    Scene <code style={{ color: '#10B981', backgroundColor: 'rgba(16, 185, 129, 0.12)', padding: '2px 8px', borderRadius: '4px' }}>{activeAssetKey}</code> — {scale}× Depth Upsampling & Refinement
+                    Scene <code style={{ color: '#10B981', backgroundColor: 'rgba(16, 185, 129, 0.12)', padding: '2px 8px', borderRadius: '4px' }}>{activeSceneInfo.name || activeAssetKey}</code> — {scale}× Depth Upsampling & Refinement
                   </div>
                   <div style={{ fontSize: '12.5px', color: '#9CA3AF', marginTop: '4px' }}>
-                    Single-sensor Guided Anisotropic Spatial Diffusion + Energy Minimization
+                    {activeSceneInfo.description || 'Single-sensor Guided Anisotropic Spatial Diffusion + Energy Minimization'}
                   </div>
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  {dataset === 'middlebury' && (
+                  {dataset !== 'custom_upload' && (
                     <select
-                      value={scenePreset}
-                      onChange={(e) => handlePresetSelect(e.target.value)}
+                      value={activeAssetKey}
+                      onChange={(e) => {
+                        const idx = currentDatasetScenes.findIndex((s) => s.id === e.target.value);
+                        if (idx >= 0) handleSceneIndexChange(idx);
+                      }}
                       style={{
                         padding: '6px 12px',
                         borderRadius: '6px',
@@ -1382,7 +1439,7 @@ export const BenchmarkStudioPage: React.FC = () => {
                         fontSize: '12px',
                       }}
                     >
-                      {PRESET_SCENES.map((s) => (
+                      {currentDatasetScenes.map((s) => (
                         <option key={s.id} value={s.id}>{s.label}</option>
                       ))}
                     </select>

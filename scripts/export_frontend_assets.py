@@ -160,7 +160,6 @@ def main():
     ]
 
     targets = [
-        {"key": "nyuv2", "type": "dataset", "name": "nyuv2", "crop": 256, "label": "NYU Depth V2 (Indoor RGB-D)"},
         {"key": "middlebury", "type": "preset", "dir": Path("data/middleburry/data/artroom1"), "label": "Middlebury Stereo (artroom1)"},
     ]
 
@@ -169,13 +168,25 @@ def main():
         if p_dir.exists():
             targets.append({"key": s, "type": "preset", "dir": p_dir, "label": f"Middlebury Stereo ({s})"})
 
-    targets.extend([
-        {"key": "skates1", "type": "preset", "dir": Path("data/middleburry/data/skates1"), "label": "Roller Skates (skates1)"},
-        {"key": "kitti", "type": "dataset", "name": "kitti", "crop": 256, "label": "KITTI Vision Suite (Outdoor LiDAR)"},
-        {"key": "synthetic", "type": "dataset", "name": "synthetic", "crop": 256, "label": "3D Texture-Copy Stress Scene"},
-    ])
+    targets.append({"key": "skates1", "type": "preset", "dir": Path("data/middleburry/data/skates1"), "label": "Roller Skates (skates1)"})
+
+    # Multi-scene targets for NYUv2 (0..7)
+    targets.append({"key": "nyuv2", "type": "dataset", "name": "nyuv2", "sample_idx": 0, "crop": 256, "label": "NYU Depth V2 (Scene 0)"})
+    for i in range(8):
+        targets.append({"key": f"nyuv2_{i}", "type": "dataset", "name": "nyuv2", "sample_idx": i, "crop": 256, "label": f"NYU Depth V2 (Scene {i})"})
+
+    # Multi-scene targets for KITTI (0..7)
+    targets.append({"key": "kitti", "type": "dataset", "name": "kitti", "sample_idx": 0, "crop": 256, "label": "KITTI Vision Suite (Scene 0)"})
+    for i in range(8):
+        targets.append({"key": f"kitti_{i}", "type": "dataset", "name": "kitti", "sample_idx": i, "crop": 256, "label": f"KITTI Vision Suite (Scene {i})"})
+
+    # Multi-scene targets for Synthetic (0..7)
+    targets.append({"key": "synthetic", "type": "dataset", "name": "synthetic", "sample_idx": 0, "crop": 256, "label": "Synthetic Stress (Scene 0)"})
+    for i in range(8):
+        targets.append({"key": f"synthetic_{i}", "type": "dataset", "name": "synthetic", "sample_idx": i, "crop": 256, "label": f"Synthetic Stress (Scene {i})"})
 
     manifest = {}
+    ds_cache = {}
 
     for item in targets:
         k = item["key"]
@@ -186,25 +197,22 @@ def main():
         boundary_gt = None
 
         if item["type"] == "dataset":
-            try:
-                ds = load_dataset(name=item["name"], split="test", degradation=deg_cfg, crop_size=item["crop"], max_samples=4)
-                sample = ds[0]
-                depth_lr = sample["depth_lr"].to(device)
-                valid_lr = sample["valid_mask_lr"].to(device)
-                rgb_hr = sample["rgb_hr"].to(device)
-                depth_gt = sample["depth_gt"].to(device)
-                valid_gt = sample["valid_mask_gt"].to(device)
-                boundary_gt = sample["boundary_mask_gt"].to(device)
-            except Exception as e:
-                print(f"  Error loading dataset {item['name']}: {e}, falling back to synthetic")
-                ds = load_dataset(name="synthetic", split="test", degradation=deg_cfg, crop_size=256, max_samples=4)
-                sample = ds[0]
-                depth_lr = sample["depth_lr"].to(device)
-                valid_lr = sample["valid_mask_lr"].to(device)
-                rgb_hr = sample["rgb_hr"].to(device)
-                depth_gt = sample["depth_gt"].to(device)
-                valid_gt = sample["valid_mask_gt"].to(device)
-                boundary_gt = sample["boundary_mask_gt"].to(device)
+            c_key = (item["name"], item["crop"])
+            if c_key not in ds_cache:
+                try:
+                    ds_cache[c_key] = load_dataset(name=item["name"], split="test", degradation=deg_cfg, crop_size=item["crop"], max_samples=16)
+                except Exception as e:
+                    print(f"  Error loading dataset {item['name']}: {e}, falling back to synthetic")
+                    ds_cache[c_key] = load_dataset(name="synthetic", split="test", degradation=deg_cfg, crop_size=256, max_samples=16)
+            ds = ds_cache[c_key]
+            s_idx = item.get("sample_idx", 0) % len(ds)
+            sample = ds[s_idx]
+            depth_lr = sample["depth_lr"].to(device)
+            valid_lr = sample["valid_mask_lr"].to(device)
+            rgb_hr = sample["rgb_hr"].to(device)
+            depth_gt = sample["depth_gt"].to(device)
+            valid_gt = sample["valid_mask_gt"].to(device)
+            boundary_gt = sample["boundary_mask_gt"].to(device)
         else: # preset
             p_dir = item["dir"]
             rgb_path = next(p_dir.glob("im*.png"), None) or next(p_dir.glob("view*.png"), None)
